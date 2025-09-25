@@ -1,0 +1,9 @@
+# Ignore everything in the robotics directory
+*
+
+# But don't ignore the robotics_llm_pddl directory
+!robotics_llm_pddl/
+!robotics_llm_pddl/**
+
+# Don't ignore this gitignore file
+!.gitignore
