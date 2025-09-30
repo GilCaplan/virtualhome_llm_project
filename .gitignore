@@ -5,5 +5,12 @@
 !robotics_llm_pddl/
 !robotics_llm_pddl/**
 
+# Don't ignore the core directory
+!core/
+!core/**
+
 # Don't ignore this gitignore file
 !.gitignore
+
+# Ignore environment variables
+.env

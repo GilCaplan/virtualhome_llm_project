@@ -5,10 +5,36 @@ import sys
 import json
 import glob
 import subprocess
+import socket
+import signal
+import time
+from contextlib import contextmanager
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../virtualhome/virtualhome/simulation'))
 from unity_simulator import comm_unity
+
+
+class TimeoutError(Exception):
+    """Custom timeout exception"""
+    pass
+
+
+@contextmanager
+def timeout(seconds):
+    """Timeout context manager using SIGALRM"""
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Operation timed out after {seconds} seconds")
+
+    original_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(seconds)
+
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original_handler)
 
 class PDDLVirtualHomeSystem:
     """
@@ -20,9 +46,18 @@ class PDDLVirtualHomeSystem:
     5. Generate Video
     """
 
-    def __init__(self, simulator_path, api_key):
+    def __init__(self, simulator_path, api_key, port=None):
         self.simulator_path = simulator_path
         self.comm = None
+        self.port = port
+        self.current_task_id = None
+
+        # Validate inputs
+        if not api_key:
+            raise ValueError("API key is required")
+
+        if not os.path.exists(simulator_path):
+            raise FileNotFoundError(f"Simulator not found at: {simulator_path}")
 
         # Ensure core/Output directory exists
         core_output_dir = os.path.join(os.path.dirname(__file__), 'Output')
@@ -146,6 +181,13 @@ class PDDLVirtualHomeSystem:
         """Step 1: Load VirtualHome scene and task"""
         print(f"Step 1: Loading scene and task {task_id}")
 
+        # Validate task_id
+        if not isinstance(task_id, int):
+            raise TypeError(f"task_id must be integer, got {type(task_id).__name__}")
+
+        if task_id < 0:
+            raise ValueError(f"task_id must be non-negative, got {task_id}")
+
         # Load tasks from dataset
         scene_name = "TrimmedTestScene1_graph"
         base_path = os.path.join(os.path.dirname(__file__), '..',
@@ -154,17 +196,29 @@ class PDDLVirtualHomeSystem:
         executable_path = os.path.join(base_path, 'executable_programs', scene_name, 'results_intentions_march-13-18')
         task_files = sorted(glob.glob(os.path.join(executable_path, '*.txt')))
 
+        if not task_files:
+            raise RuntimeError(f"No task files found in {executable_path}")
+
         if task_id >= len(task_files):
             raise ValueError(f"Task {task_id} not found. Available: 0-{len(task_files)-1}")
 
-        # Load task
-        with open(task_files[task_id], 'r') as f:
+        # Load task with validation
+        task_file = task_files[task_id]
+        if not os.path.isfile(task_file):
+            raise FileNotFoundError(f"Task file not found: {task_file}")
+
+        with open(task_file, 'r') as f:
             lines = f.readlines()
-            task = {
-                'id': task_id,
-                'title': lines[0].strip(),
-                'description': lines[1].strip()
-            }
+
+        if len(lines) < 2:
+            raise ValueError(f"Invalid task file format: expected at least 2 lines, got {len(lines)}")
+
+        task = {
+            'id': task_id,
+            'task_id': task_id,  # For consistency
+            'title': lines[0].strip() if lines[0].strip() else f"Task_{task_id}",
+            'description': lines[1].strip() if lines[1].strip() else "No description"
+        }
 
         # Load corresponding graph
         graph_file = task_files[task_id].replace('executable_programs', 'init_and_final_graphs').replace('.txt', '.json')
@@ -173,22 +227,108 @@ class PDDLVirtualHomeSystem:
             task['initial_graph'] = graphs['init_graph']
             task['final_graph'] = graphs['final_graph']
 
-        print(f"✅ Loaded: {task['title']} - {task['description']}")
+        print(f" Loaded: {task['title']} - {task['description']}")
         return task
+
+    def _get_available_port(self, start_port=8080, max_attempts=10):
+        """Find available port for simulator"""
+        for offset in range(max_attempts):
+            port = start_port + offset
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind(('localhost', port))
+                sock.close()
+                return str(port)
+            except OSError:
+                sock.close()
+                continue
+
+        raise RuntimeError(
+            f"No available ports in range {start_port}-{start_port+max_attempts-1}. "
+            f"Please close existing simulator instances."
+        )
+
+    def _initialize_or_reuse_simulator(self, task):
+        """Initialize simulator if needed, or reuse existing one"""
+        # Get available port (only once per instance)
+        if not self.port:
+            self.port = self._get_available_port()
+            print(f"  Using simulator port: {self.port}")
+
+        # If simulator already initialized, just reload the scene
+        if self.comm is not None:
+            print(f"  Reusing existing simulator on port {self.port}")
+            try:
+                self.comm.reset(0)
+                self.comm.expand_scene(task['initial_graph'])
+                self.comm.add_character('Chars/Male2', initial_room='kitchen')
+                success, scene_graph = self.comm.environment_graph()
+                if not success:
+                    raise RuntimeError("Failed to get scene graph")
+                print(f"  ✅ Scene reloaded successfully")
+                return scene_graph
+            except Exception as e:
+                print(f"  ⚠️ Reuse failed: {e}, reinitializing...")
+                try:
+                    self.comm.close()
+                except:
+                    pass
+                self.comm = None
+
+        # Initialize VirtualHome with health checks
+        print(f"  Initializing simulator...")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.comm = comm_unity.UnityCommunication(
+                    file_name=self.simulator_path,
+                    port=self.port
+                )
+
+                # Wait for simulator to start
+                time.sleep(2)
+
+                # Test communication
+                success, test_graph = self.comm.environment_graph()
+                if not success:
+                    raise RuntimeError("Simulator started but not responding")
+
+                # Reset and load scene
+                self.comm.reset(0)
+                self.comm.expand_scene(task['initial_graph'])
+                self.comm.add_character('Chars/Male2', initial_room='kitchen')
+
+                # Final health check
+                success, scene_graph = self.comm.environment_graph()
+                if not success:
+                    raise RuntimeError("Failed to get scene graph after loading")
+
+                print(f"  ✅ Simulator initialized successfully")
+                return scene_graph
+
+            except Exception as e:
+                print(f"  ❌ Initialization attempt {attempt+1}/{max_retries} failed: {e}")
+                if self.comm:
+                    try:
+                        self.comm.close()
+                    except:
+                        pass
+                    self.comm = None
+
+                if attempt < max_retries - 1:
+                    print(f"  Retrying in 2 seconds...")
+                    time.sleep(2)
+                    return None
+                else:
+                    raise RuntimeError(f"Failed to initialize simulator after {max_retries} attempts")
+        return None
 
     def scene_to_pddl_problem(self, task):
         """Step 2: Convert scene and task to PDDL problem"""
         print("Step 2: Converting scene to PDDL problem")
 
-        # Initialize VirtualHome to get current scene state
-        self.comm = comm_unity.UnityCommunication(file_name=self.simulator_path, port="8080")
-        self.comm.reset(0)
-        self.comm.expand_scene(task['initial_graph'])
-        self.comm.add_character('Chars/Male2', initial_room='kitchen')
-
-        success, scene_graph = self.comm.environment_graph()
-        if not success:
-            raise RuntimeError("Failed to get scene graph")
+        # Initialize or reuse simulator
+        scene_graph = self._initialize_or_reuse_simulator(task)
 
         # DEBUG: Print objects for troubleshooting
         if 'remote' in task['description'].lower():
@@ -216,13 +356,38 @@ class PDDLVirtualHomeSystem:
         appliances = []
         interactive_objects = []
 
+        # Track unique object names and create mapping
+        object_names_seen = set()
+        base_name_to_ids = {}  # Track multiple objects of same type
+
         for node in scene_graph['nodes']:
-            name = node['class_name'].lower().replace(' ', '_')
-            node_id = str(node['id'])
+            base_name = node['class_name'].lower().replace(' ', '_')
+            node_id = node['id']
             states = node.get('states', [])
 
+            # Track all IDs for each base name
+            if base_name not in base_name_to_ids:
+                base_name_to_ids[base_name] = []
+            base_name_to_ids[base_name].append(node_id)
+
+            # Use base name without ID for PDDL (cleaner, works with VirtualHome)
+            # For rooms and unique objects, use base name
+            # For multiple objects (chairs, books), use base_name only (VH will pick any)
+            if any(room in base_name for room in ['kitchen', 'bedroom', 'bathroom', 'living']):
+                # Rooms: use base name only
+                name = base_name
+            else:
+                # Regular objects: use base name (VH will use first available)
+                name = base_name
+
+            # Skip if we've already added this base name
+            if name in object_names_seen:
+                continue
+
+            object_names_seen.add(name)
+
             # Categorize and add to objects
-            if any(room in name for room in ['kitchen', 'bedroom', 'bathroom', 'living']):
+            if any(room in base_name for room in ['kitchen', 'bedroom', 'bathroom', 'living']):
                 rooms.append(name)
                 objects_section.append(f"{name} - room")
 
@@ -309,6 +474,14 @@ class PDDLVirtualHomeSystem:
             else:
                 goal_conditions.append("(at agent bedroom)")  # Default
 
+        # Store categorized objects for LLM prompt (after all objects are added)
+        self._current_scene_objects = {
+            'rooms': rooms,
+            'furniture': furniture,
+            'appliances': appliances,
+            'interactive_objects': interactive_objects
+        }
+
         # Construct PDDL problem
         pddl_problem = f"""
 (define (problem {task['title'].replace(' ', '-').lower()})
@@ -333,7 +506,7 @@ class PDDLVirtualHomeSystem:
         print(f"✅ PDDL Problem created with {len(objects_section)} objects, {len(init_section)} init conditions")
 
         # Save PDDL problem to text file for review
-        pddl_filename = f"Output/pddl_task_{task.get('task_id', 'unknown')}_problem.txt"
+        pddl_filename = f"Output/pddl_task_{task['task_id']}_problem.txt"
         try:
             with open(pddl_filename, 'w') as f:
                 f.write(f"Task: {task['title']} - {task['description']}\n")
@@ -346,14 +519,126 @@ class PDDLVirtualHomeSystem:
 
         return pddl_problem
 
+    def _validate_pddl_plan(self, pddl_solution):
+        """Validate LLM-generated PDDL plan"""
+        validation_errors = []
+
+        # Extract actions from solution
+        actions = []
+        for line in pddl_solution.strip().split('\n'):
+            line = line.strip()
+            if line.startswith('(') and not line.startswith('(:plan'):
+                if line.endswith(')'):
+                    line = line[1:-1]
+                    parts = line.split()
+                    if parts:
+                        actions.append((parts[0], parts[1:]))
+
+        if not actions:
+            validation_errors.append("No actions found in plan")
+            return False, validation_errors
+
+        # Valid actions from domain
+        valid_actions = {
+            'walk': 3,
+            'find-object': 3,
+            'sit-down': 2,
+            'switch-on': 2,
+            'switch-off': 2,
+            'touch-object': 2,
+            'open-container': 2,
+            'close-container': 2,
+            'grab-object': 2,
+            'put-object-in': 3
+        }
+
+        # Validate each action
+        for i, (action_name, params) in enumerate(actions):
+            action_name = action_name.lower()
+
+            if action_name not in valid_actions:
+                validation_errors.append(
+                    f"Action {i+1}: Unknown action '{action_name}'"
+                )
+                continue
+
+            expected_params = valid_actions[action_name]
+            if len(params) != expected_params:
+                validation_errors.append(
+                    f"Action {i+1}: '{action_name}' expects {expected_params} parameters, got {len(params)}"
+                )
+
+        if validation_errors:
+            return False, validation_errors
+
+        return True, []
+
     def solve_pddl_with_llm(self, pddl_problem, task):
         """Step 3: Use Gemini to solve PDDL problem"""
         print("Step 3: Solving PDDL with Gemini 1.5 Flash")
+
+        # Get available objects from the scene
+        scene_objects = getattr(self, '_current_scene_objects', {})
+        rooms = scene_objects.get('rooms', [])
+        furniture = scene_objects.get('furniture', [])
+        appliances = scene_objects.get('appliances', [])
+        interactive = scene_objects.get('interactive_objects', [])
+
+        # Format object lists for prompt
+        rooms_str = ', '.join(rooms) if rooms else 'none'
+        furniture_str = ', '.join(furniture) if furniture else 'none'
+        appliances_str = ', '.join(appliances) if appliances else 'none'
+        interactive_str = ', '.join(interactive[:10]) if interactive else 'none'  # Limit to 10
+        if len(interactive) > 10:
+            interactive_str += f' (and {len(interactive) - 10} more)'
+
+        # Add helpful hints for common object name variations
+        hints = []
+        all_objects = rooms + furniture + appliances + interactive
+
+        # Check for lights/lamps
+        lamps = [obj for obj in all_objects if 'lamp' in obj.lower() or 'light' in obj.lower()]
+        if lamps:
+            hints.append(f"For 'light', use: {', '.join(lamps)}")
+
+        # Check for TV/television
+        tvs = [obj for obj in all_objects if 'tv' in obj.lower() or 'television' in obj.lower()]
+        if tvs:
+            hints.append(f"For 'tv', use: {', '.join(tvs)}")
+
+        # Check for computer-related
+        computers = [obj for obj in all_objects if 'computer' in obj.lower() or 'screen' in obj.lower()]
+        if computers:
+            hints.append(f"For 'computer', use: {', '.join(computers)}")
+
+        hints_str = '\n  '.join(hints) if hints else 'No special hints needed'
 
         solve_prompt = f"""
 You are a PDDL planner. Given the domain and problem below, generate a valid PDDL solution plan.
 
 TASK: {task['title']} - {task['description']}
+
+CRITICAL CONSTRAINT - AVAILABLE OBJECTS IN SCENE:
+You can ONLY use objects that actually exist in this apartment scene:
+
+  📍 ROOMS: {rooms_str}
+  🪑 FURNITURE: {furniture_str}
+  🔌 APPLIANCES: {appliances_str}
+  🎮 INTERACTIVE: {interactive_str}
+
+💡 OBJECT NAME HINTS:
+  {hints_str}
+
+DO NOT use any objects not listed above. If the task mentions objects that don't exist
+   (like "groceries", "book", "coffeetable"), either:
+   1. Find the closest available substitute from the list above
+   2. Simplify the task to use only available objects
+   3. Skip actions involving non-existent objects
+
+Examples:
+- If task says "grab groceries" but no groceries exist → just open/close the fridge
+- If task says "turn on light" → use the exact lamp name from the hints above
+- If task says "read book" but no book exists → walk to the location and sit down
 
 DOMAIN AND PROBLEM:
 {self.virtualhome_domain}
@@ -362,9 +647,10 @@ DOMAIN AND PROBLEM:
 
 REQUIREMENTS:
 1. Return a valid sequence of PDDL actions that achieves the goal
-2. Use the exact action names and parameters from the domain
-3. Ensure preconditions are satisfied before each action
-4. Format your response as a structured plan
+2. Use ONLY objects that exist in the scene (see list above)
+3. Use the exact action names and parameters from the domain
+4. Ensure preconditions are satisfied before each action
+5. Format your response as a structured plan
 
 OUTPUT FORMAT (return exactly this structure):
 (:plan
@@ -381,15 +667,66 @@ OUTPUT FORMAT (return exactly this structure):
 Generate the complete plan to solve: "{task['description']}"
 """
 
-        response = self.model.generate_content(solve_prompt)
-        pddl_solution = response.text
+        max_retries = 3
+        llm_timeout = 60  # seconds
 
-        print(f"✅ PDDL Solution generated")
-        print("PDDL Plan:")
-        print(pddl_solution)
+        for attempt in range(max_retries):
+            try:
+                print(f"  Attempt {attempt + 1}/{max_retries}... (timeout: {llm_timeout}s)")
+
+                with timeout(llm_timeout):
+                    response = self.model.generate_content(solve_prompt)
+                    pddl_solution = response.text
+
+                if not pddl_solution or len(pddl_solution.strip()) < 10:
+                    raise ValueError("LLM returned empty or invalid response")
+
+                # Validate the plan
+                valid, errors = self._validate_pddl_plan(pddl_solution)
+
+                if not valid:
+                    print("  ⚠️ LLM generated invalid plan:")
+                    for error in errors:
+                        print(f"    - {error}")
+
+                    if attempt < max_retries - 1:
+                        print(f"  Retrying with stricter prompt...")
+                        solve_prompt += f"\n\nPREVIOUS ATTEMPT HAD ERRORS:\n" + "\n".join(errors)
+                        continue
+                    else:
+                        raise ValueError(f"LLM failed to generate valid plan after {max_retries} attempts:\n" + "\n".join(errors))
+
+                print(f"✅ PDDL Solution validated ({len(pddl_solution)} chars)")
+                print("PDDL Plan:")
+                print(pddl_solution)
+                break
+
+            except TimeoutError as e:
+                print(f"  ❌ Timeout: {e}")
+                if attempt < max_retries - 1:
+                    print(f"  Retrying...")
+                    continue
+                else:
+                    raise RuntimeError(f"LLM failed to respond after {max_retries} attempts")
+
+            except google_exceptions.ResourceExhausted as e:
+                print(f"  ❌ API quota exceeded: {e}")
+                raise RuntimeError("Google API quota exceeded. Please wait and try again.")
+
+            except google_exceptions.InvalidArgument as e:
+                print(f"  ❌ Invalid API argument: {e}")
+                raise RuntimeError(f"Invalid prompt format: {e}")
+
+            except Exception as e:
+                print(f"  ❌ Error: {type(e).__name__}: {e}")
+                if attempt < max_retries - 1:
+                    print(f"  Retrying...")
+                    continue
+                else:
+                    raise
 
         # Save PDDL solution to text file for review
-        solution_filename = f"Output/pddl_task_{task.get('task_id', 'unknown')}_solution.txt"
+        solution_filename = f"Output/pddl_task_{task['task_id']}_solution.txt"
         try:
             with open(solution_filename, 'w') as f:
                 f.write(f"Task: {task['title']} - {task['description']}\n")
@@ -478,20 +815,31 @@ Generate the complete plan to solve: "{task['description']}"
             return {}
 
         mapping = {}
+        # Track first instance of each object type
+        first_of_type = {}
+
         for node in graph['nodes']:
             # Use original case from VirtualHome
             original_name = node['class_name']
-            name = original_name.lower().replace(' ', '_')
-            # Use simple integer format (not decimal)
-            mapping[name] = node['id']
-            # Also store with original name for VH script generation
-            mapping[f"{name}_original"] = original_name
+            base_name = original_name.lower().replace(' ', '_')
+            node_id = node['id']
+
+            # Map base name to FIRST instance of that type (for consistency)
+            if base_name not in first_of_type:
+                first_of_type[base_name] = node_id
+                mapping[base_name] = node_id
+                mapping[f"{base_name}_original"] = original_name
+
+            # Also map with ID suffix for specific references
+            name_with_id = f"{base_name}_{node_id}"
+            mapping[name_with_id] = node_id
+            mapping[f"{name_with_id}_original"] = original_name
 
             # Add common aliases for better object resolution
-            if 'remote' in name or 'control' in name:
-                mapping['tvremote'] = node['id']
-                mapping['tv-remote'] = node['id']
-                mapping['tv_remote'] = node['id']
+            if 'remote' in base_name or 'control' in base_name:
+                mapping['tvremote'] = node_id
+                mapping['tv-remote'] = node_id
+                mapping['tv_remote'] = node_id
                 mapping['tvremote_original'] = original_name
                 mapping['tv-remote_original'] = original_name
                 mapping['tv_remote_original'] = original_name
@@ -499,18 +847,86 @@ Generate the complete plan to solve: "{task['description']}"
         # Add room mappings dynamically from scene graph
         room_mapping = {}
         for node in graph['nodes']:
-            if 'room' in node['class_name'].lower():
-                room_name = node['class_name'].lower().replace(' ', '_')
-                room_mapping[room_name] = node['id']
+            class_lower = node['class_name'].lower()
+            if any(room in class_lower for room in ['kitchen', 'bedroom', 'bathroom', 'living']):
+                room_name = class_lower.replace(' ', '_')
+                if room_name not in room_mapping:  # Use first instance
+                    room_mapping[room_name] = node['id']
 
-        # Add known room mappings with fallbacks
-        mapping['kitchen'] = room_mapping.get('kitchen', 207)
-        mapping['bedroom'] = room_mapping.get('bedroom', 74)
-        mapping['bathroom'] = room_mapping.get('bathroom', 11)
-        mapping['livingroom'] = room_mapping.get('livingroom', 336)
-        mapping['home_office'] = room_mapping.get('bedroom', 74)  # Computer is in bedroom
+        # Add known room mappings
+        if 'kitchen' in room_mapping:
+            mapping['kitchen'] = room_mapping['kitchen']
+        if 'bedroom' in room_mapping:
+            mapping['bedroom'] = room_mapping['bedroom']
+        if 'bathroom' in room_mapping:
+            mapping['bathroom'] = room_mapping['bathroom']
+        if 'livingroom' in room_mapping:
+            mapping['livingroom'] = room_mapping['livingroom']
+
+        # Fallback for home_office (usually bedroom)
+        mapping['home_office'] = room_mapping.get('bedroom', mapping.get('bedroom', 74))
 
         return mapping
+
+    def _fuzzy_object_match(self, target_name, object_map):
+        """Fuzzy match object name with multiple strategies"""
+        target_lower = target_name.lower().replace('-', '_').replace(' ', '_')
+
+        # Strategy 0: Strip ID suffix if present (bedroom_74 -> bedroom)
+        import re
+        base_target = re.sub(r'_\d+$', '', target_lower)  # Remove _### at end
+
+        # Strategy 1: Try base name without ID
+        if base_target in object_map and base_target != target_lower:
+            print(f"  Matched '{target_name}' to base '{base_target}'")
+            return object_map[base_target], object_map.get(f"{base_target}_original", base_target)
+
+        # Strategy 2: Exact match
+        if target_lower in object_map:
+            return object_map[target_lower], object_map.get(f"{target_lower}_original", target_name)
+
+        # Strategy 3: Try variations
+        variations = [
+            target_lower.replace('_', ''),
+            target_lower.replace('_', '-'),
+            target_name.lower(),
+            base_target.replace('_', ''),
+            base_target.replace('_', '-')
+        ]
+
+        for var in variations:
+            if var in object_map:
+                print(f"  Variation matched '{target_name}' to '{var}'")
+                return object_map[var], object_map.get(f"{var}_original", var)
+
+        # Strategy 4: Partial match
+        for key in object_map.keys():
+            if '_original' not in key:
+                if base_target in key or key in base_target:
+                    print(f"  Fuzzy matched '{target_name}' to '{key}'")
+                    return object_map[key], object_map.get(f"{key}_original", key)
+
+        # Strategy 5: Semantic match (common aliases)
+        aliases = {
+            'tv': ['television', 'tv_stand', 'tvstand'],
+            'computer': ['pc', 'desktop', 'laptop', 'cpuscreen'],
+            'fridge': ['refrigerator', 'icebox'],
+            'couch': ['sofa'],
+            'remote': ['remote_control', 'tv_remote', 'controller']
+        }
+
+        for alias_base, synonyms in aliases.items():
+            if base_target == alias_base or base_target in synonyms:
+                for synonym in [alias_base] + synonyms:
+                    if synonym in object_map:
+                        print(f"  Semantic matched '{target_name}' to '{synonym}'")
+                        return object_map[synonym], object_map.get(f"{synonym}_original", synonym)
+
+        # Failure
+        print(f"  ⚠️ Object '{target_name}' not found in scene")
+        available = [k for k in object_map.keys() if '_original' not in k][:20]
+        print(f"  Available objects: {available}")
+        return None, None
 
     def _convert_pddl_action_to_vh(self, action_name, params, object_map):
         """Convert single PDDL action to VirtualHome action"""
@@ -526,26 +942,12 @@ Generate the complete plan to solve: "{task['description']}"
             # (find-object agent object room) -> [FIND] <object> (id)
             if len(params) >= 2:
                 obj_name = params[1]
-                # Try multiple name variations to find the correct mapping
-                obj_id = None
-                original_name = obj_name
+                obj_id, original_name = self._fuzzy_object_match(obj_name, object_map)
 
-                # Try exact match first
-                if obj_name in object_map:
-                    obj_id = object_map[obj_name]
-                    original_name = object_map.get(f"{obj_name}_original", obj_name)
-                # Try with underscores
-                elif obj_name.replace('-', '_') in object_map:
-                    alt_name = obj_name.replace('-', '_')
-                    obj_id = object_map[alt_name]
-                    original_name = object_map.get(f"{alt_name}_original", alt_name)
-                # Try without separators
-                elif obj_name.replace('-', '').replace('_', '') in object_map:
-                    alt_name = obj_name.replace('-', '').replace('_', '')
-                    obj_id = object_map[alt_name]
-                    original_name = object_map.get(f"{alt_name}_original", alt_name)
-                else:
-                    obj_id = 1  # Fallback
+                if obj_id is None:
+                    print(f"  Cannot find object '{obj_name}' - using fallback")
+                    obj_id = 1
+                    original_name = obj_name
 
                 return f"[FIND] <{original_name}> ({obj_id})"
 
@@ -602,26 +1004,12 @@ Generate the complete plan to solve: "{task['description']}"
             # (grab-object agent object) -> [GRAB] <object> (id)
             if len(params) >= 2:
                 obj_name = params[1]
-                # Try multiple name variations to find the correct mapping
-                obj_id = None
-                original_name = obj_name
+                obj_id, original_name = self._fuzzy_object_match(obj_name, object_map)
 
-                # Try exact match first
-                if obj_name in object_map:
-                    obj_id = object_map[obj_name]
-                    original_name = object_map.get(f"{obj_name}_original", obj_name)
-                # Try with underscores
-                elif obj_name.replace('-', '_') in object_map:
-                    alt_name = obj_name.replace('-', '_')
-                    obj_id = object_map[alt_name]
-                    original_name = object_map.get(f"{alt_name}_original", alt_name)
-                # Try without separators
-                elif obj_name.replace('-', '').replace('_', '') in object_map:
-                    alt_name = obj_name.replace('-', '').replace('_', '')
-                    obj_id = object_map[alt_name]
-                    original_name = object_map.get(f"{alt_name}_original", alt_name)
-                else:
-                    obj_id = 1  # Fallback
+                if obj_id is None:
+                    print(f"  Cannot find object '{obj_name}' - using fallback")
+                    obj_id = 1
+                    original_name = obj_name
 
                 return f"[GRAB] <{original_name}> ({obj_id})"
 
@@ -643,7 +1031,7 @@ Generate the complete plan to solve: "{task['description']}"
         # Get current scene state
         success, graph = self.comm.environment_graph()
         if not success:
-            print("⚠️ Could not get scene graph for validation")
+            print("Could not get scene graph for validation")
             return True  # Continue anyway
 
         # Check if agent can reach target rooms/objects
@@ -662,18 +1050,18 @@ Generate the complete plan to solve: "{task['description']}"
                         issues.append(f"Action {i+1}: Navigation to {target} may have collision issues")
 
         if issues:
-            print("⚠️ Potential spatial issues detected:")
+            print("Potential spatial issues detected:")
             for issue in issues:
                 print(f"    - {issue}")
             print("Proceeding with execution (spatial issues are VirtualHome constraints)")
         else:
-            print("✅ No obvious spatial constraint violations detected")
+            print("No obvious spatial constraint violations detected")
 
         return True  # Always proceed for now
 
     def _analyze_failure_and_replan(self, error_message, original_script, task):
         """Analyze execution failure and generate alternative plan"""
-        print("\n🧠 ADAPTIVE REPLANNING - Analyzing failure...")
+        print("\nADAPTIVE REPLANNING - Analyzing failure...")
 
         # Analyze the type of failure
         failure_type = None
@@ -800,7 +1188,7 @@ Generate the complete plan to solve: "{task['description']}"
         # Capture initial state
         success, initial_graph = self.comm.environment_graph()
         if not success:
-            print("❌ Failed to capture initial state")
+            print("Failed to capture initial state")
             return False, "Cannot capture initial state"
 
         # Execute script with recording
@@ -819,7 +1207,7 @@ Generate the complete plan to solve: "{task['description']}"
         )
 
         if not execution_success:
-            print(f"❌ Execution failed: {message}")
+            print(f"Execution failed: {message}")
 
             # Attempt adaptive replanning
             alternative_plan = self._analyze_failure_and_replan(str(message), vh_script, task)
@@ -857,23 +1245,23 @@ Generate the complete plan to solve: "{task['description']}"
                         else:
                             return False, "Alternative plan succeeded but cannot capture final state"
                     else:
-                        print(f"❌ Alternative plan also failed: {alt_message}")
+                        print(f"Alternative plan also failed: {alt_message}")
 
                 except Exception as e:
-                    print(f"❌ Error executing alternative plan: {e}")
+                    print(f"Error executing alternative plan: {e}")
 
             return False, f"Execution failed: {message}"
 
         # Capture final state
         success, final_graph = self.comm.environment_graph()
         if not success:
-            print("❌ Failed to capture final state")
+            print("Failed to capture final state")
             return False, "Cannot capture final state"
 
         # Verify completion based on task
         verification_result = self._verify_task_completion(task, initial_graph, final_graph)
 
-        print(f"✅ Execution completed")
+        print(f"Execution completed")
         print(f"Verification: {verification_result}")
 
         return execution_success, verification_result
@@ -933,9 +1321,37 @@ Generate the complete plan to solve: "{task['description']}"
             }
         return states
 
+    def _check_ffmpeg(self):
+        """Check if FFmpeg is installed"""
+        try:
+            result = subprocess.run(
+                ['ffmpeg', '-version'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                version_line = result.stdout.split('\n')[0]
+                print(f"  ✅ FFmpeg found: {version_line}")
+                return True
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+        print("  ❌ FFmpeg not found")
+        print("  Please install FFmpeg:")
+        print("    macOS: brew install ffmpeg")
+        print("    Ubuntu: apt-get install ffmpeg")
+        print("    Windows: Download from https://ffmpeg.org/download.html")
+        return False
+
     def generate_video(self, task):
         """Step 6: Generate video from execution frames"""
         print("Step 6: Generating video from execution")
+
+        # Check FFmpeg availability
+        if not self._check_ffmpeg():
+            print("Skipping video generation (FFmpeg not installed)")
+            return False
 
         try:
             # Check multiple output directories, including subdirectories
@@ -973,7 +1389,7 @@ Generate the complete plan to solve: "{task['description']}"
                         break
 
             if not png_files:
-                print("❌ No PNG files found for video generation")
+                print("No PNG files found for video generation")
                 print("Searched in directories:")
                 for d in possible_dirs:
                     if os.path.exists(d):
@@ -1018,28 +1434,28 @@ Generate the complete plan to solve: "{task['description']}"
             if result.returncode == 0:
                 if os.path.exists(video_path):
                     file_size = os.path.getsize(video_path) / (1024 * 1024)  # MB
-                    print(f"✅ Video generated successfully!")
+                    print(f"Video generated successfully!")
                     print(f"   Path: {video_path}")
                     print(f"   Size: {file_size:.1f} MB")
                     print(f"   Frames: {len(png_files)}")
                     return True
                 else:
-                    print(f"❌ Video file not found after FFmpeg completion")
+                    print(f"Video file not found after FFmpeg completion")
                     return False
             else:
-                print(f"❌ FFmpeg failed:")
+                print(f"FFmpeg failed:")
                 print(f"   Command: {' '.join(ffmpeg_cmd)}")
                 print(f"   Error: {result.stderr}")
                 return False
 
         except Exception as e:
-            print(f"❌ Video generation error: {e}")
+            print(f"Video generation error: {e}")
             return False
 
     def run_complete_pipeline(self, task_id=0):
         """Run the complete PDDL-centric pipeline"""
         self.current_task_id = task_id  # Track current task for file naming
-        print(f"🤖 PDDL-VIRTUALHOME PIPELINE - TASK {task_id}")
+        print(f"PDDL-VIRTUALHOME PIPELINE - TASK {task_id}")
         print("=" * 60)
 
         try:
@@ -1073,24 +1489,85 @@ Generate the complete plan to solve: "{task['description']}"
             return success
 
         except Exception as e:
-            print(f"❌ Pipeline error: {e}")
+            print(f"Pipeline error: {e}")
             return False
 
         finally:
             if self.comm:
                 self.comm.close()
 
+    def cleanup(self):
+        """Explicit cleanup method"""
+        print("Cleaning up resources...")
+
+        if self.comm:
+            try:
+                print("  Closing simulator connection...")
+                self.comm.close()
+                print("Simulator closed")
+            except Exception as e:
+                print(f"Error closing simulator: {e}")
+            finally:
+                self.comm = None
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensure cleanup"""
+        self.cleanup()
+        return False
+
+    def __del__(self):
+        """Destructor - final cleanup attempt"""
+        if hasattr(self, 'comm') and self.comm:
+            try:
+                self.comm.close()
+            except:
+                pass
+
+
 def main():
     """Test the PDDL-VirtualHome system"""
-    api_key = 'AIzaSyDlNUlJOXiH_30MvY-mmSpWLVsezTG3kMQ'
+    # Try to load from .env file automatically
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        # Load from parent directory (where .env is located)
+        env_path = Path(__file__).parent.parent / '.env'
+        if env_path.exists():
+            load_dotenv(env_path)
+            print(f"Loaded environment from {env_path}")
+    except ImportError:
+        print("python-dotenv not installed. Install with: pip install python-dotenv")
+        print("Falling back to environment variables...")
+
+    # Load API key from environment
+    api_key = os.getenv('GOOGLE_API_KEY')
+    if not api_key:
+        raise ValueError(
+            "GOOGLE_API_KEY environment variable not set.\n"
+            "Please either:\n"
+            "  1. Install python-dotenv: pip install python-dotenv\n"
+            "  2. Set manually: export GOOGLE_API_KEY='your-api-key'\n"
+            "  3. Add to .env file in project root\n"
+            "Get your API key from: https://makersuite.google.com/app/apikey"
+        )
+
     simulator_path = os.path.join(os.path.dirname(__file__), '..', 'macos_exec.2.2.4.app')
 
-    system = PDDLVirtualHomeSystem(simulator_path, api_key)
+    if not os.path.exists(simulator_path):
+        raise FileNotFoundError(
+            f"VirtualHome simulator not found at: {simulator_path}\n"
+            f"Please ensure the simulator is installed."
+        )
 
-    # Test on email task
-    success = system.run_complete_pipeline(task_id=0)
+    # Use context manager for automatic cleanup
+    with PDDLVirtualHomeSystem(simulator_path, api_key) as system:
+        success = system.run_complete_pipeline(task_id=0)
+        print(f"\nPipeline completed: {'SUCCESS' if success else 'FAILED'}")
 
-    print(f"\nPipeline completed: {'SUCCESS' if success else 'FAILED'}")
 
 if __name__ == "__main__":
     main()
