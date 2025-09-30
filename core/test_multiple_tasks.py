@@ -36,10 +36,10 @@ def test_multiple_tasks():
     if not os.path.exists(simulator_path):
         raise FileNotFoundError(f"Simulator not found at: {simulator_path}")
 
-    # Test on more tasks for comprehensive generalization verification
-    tasks_to_test = sorted([1, 25, 67, 152, 200, 548, 486,782, 75,98])
+    # Test 20 random tasks for comprehensive verification
+    tasks_to_test = [25, 27, 30, 32, 89, 95, 104, 114, 142, 203, 223, 225, 228, 238, 250, 281, 429, 432, 459, 517]
 
-    print("🤖 TESTING PDDL SYSTEM GENERALIZATION")
+    print("🤖 TESTING PDDL SYSTEM ON 20 RANDOM TASKS")
     print("=" * 60)
     print(f"Testing tasks: {tasks_to_test}")
     print("=" * 60)
@@ -102,8 +102,8 @@ def test_multiple_tasks():
     return results
 
 if __name__ == "__main__":
-    print("Starting multi-task generalization test...")
+    print("Starting 20-task random generalization test...")
     results = test_multiple_tasks()
 
     print(f"\n🎯 Test completed!")
-    print("This demonstrates PDDL system generalization across different task types.")
+    print("This demonstrates PDDL system generalization across diverse tasks.")

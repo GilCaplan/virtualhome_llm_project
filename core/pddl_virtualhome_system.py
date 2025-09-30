@@ -359,26 +359,25 @@ class PDDLVirtualHomeSystem:
         # Track unique object names and create mapping
         object_names_seen = set()
         base_name_to_ids = {}  # Track multiple objects of same type
+        non_interactable_objects = []  # Track objects that cannot be directly interacted with
+
+        # Define interactable properties that VirtualHome supports
+        INTERACTABLE_PROPERTIES = {'GRABBABLE', 'CAN_OPEN', 'HAS_SWITCH', 'SITTABLE', 'LOOKABLE', 'RECIPIENT', 'SURFACES'}
 
         for node in scene_graph['nodes']:
             base_name = node['class_name'].lower().replace(' ', '_')
             node_id = node['id']
             states = node.get('states', [])
+            properties = node.get('properties', [])
+            category = node.get('category', '')
 
             # Track all IDs for each base name
             if base_name not in base_name_to_ids:
                 base_name_to_ids[base_name] = []
             base_name_to_ids[base_name].append(node_id)
 
-            # Use base name without ID for PDDL (cleaner, works with VirtualHome)
-            # For rooms and unique objects, use base name
-            # For multiple objects (chairs, books), use base_name only (VH will pick any)
-            if any(room in base_name for room in ['kitchen', 'bedroom', 'bathroom', 'living']):
-                # Rooms: use base name only
-                name = base_name
-            else:
-                # Regular objects: use base name (VH will use first available)
-                name = base_name
+            # Use base name without ID for PDDL
+            name = base_name
 
             # Skip if we've already added this base name
             if name in object_names_seen:
@@ -386,38 +385,86 @@ class PDDLVirtualHomeSystem:
 
             object_names_seen.add(name)
 
-            # Categorize and add to objects
-            if any(room in base_name for room in ['kitchen', 'bedroom', 'bathroom', 'living']):
+            # Check if object has ANY interactable properties
+            has_interactable_property = any(prop in properties for prop in INTERACTABLE_PROPERTIES)
+
+            # Categorize based on scene graph properties (dynamic, not hardcoded)
+            # IMPORTANT: Only include objects that VirtualHome can actually interact with
+
+            # 1. Check if it's a room (by name pattern - rooms don't have clear categories)
+            if any(room in base_name for room in ['kitchen', 'bedroom', 'bathroom', 'living', 'office', 'hallway']):
                 rooms.append(name)
                 objects_section.append(f"{name} - room")
 
-            elif any(furn in name for furn in ['chair', 'desk', 'bed', 'sofa']):
+            # 2. Check if it has SITTABLE property -> furniture
+            elif 'SITTABLE' in properties:
                 furniture.append(name)
                 objects_section.append(f"{name} - furniture")
                 init_section.append(f"(can-sit agent {name})")
 
-            elif 'fridge' in name:
-                # Special case: fridge is a container for object storage
-                appliances.append(name)
-                objects_section.append(f"{name} - container")
-                # Set initial fridge state as closed
-                init_section.append(f"(closed {name})")
-                init_section.append(f"(accessible {name})")
-                init_section.append(f"(can-interact agent {name})")
-            elif any(app in name for app in ['computer', 'cpuscreen', 'tv', 'stove', 'microwave']):
+            # 3. Check if it's in Furniture category AND has interactable properties
+            elif category == 'Furniture' and has_interactable_property:
+                furniture.append(name)
+                objects_section.append(f"{name} - furniture")
+                if 'SITTABLE' in properties:
+                    init_section.append(f"(can-sit agent {name})")
+
+            # 4. Check if it has HAS_SWITCH property (explicitly switchable) -> appliance
+            elif 'HAS_SWITCH' in properties:
                 appliances.append(name)
                 objects_section.append(f"{name} - appliance")
-                # Set initial appliance state
                 if 'ON' in states:
                     init_section.append(f"(on {name})")
                 else:
                     init_section.append(f"(off {name})")
 
-            elif any(inter in name for inter in ['keyboard', 'mouse', 'door', 'remote', 'sink', 'faucet', 'toilet', 'control']):
+            # 5. Check if it's in Electronics category AND has HAS_SWITCH or is grabbable
+            elif category == 'Electronics' and has_interactable_property:
+                appliances.append(name)
+                objects_section.append(f"{name} - appliance")
+                if 'ON' in states:
+                    init_section.append(f"(on {name})")
+                elif 'OFF' in states:
+                    init_section.append(f"(off {name})")
+
+            # 6. Lamps: ONLY include if they have HAS_SWITCH (can be turned on/off)
+            elif category == 'Lamps':
+                if 'HAS_SWITCH' in properties:
+                    appliances.append(name)
+                    objects_section.append(f"{name} - appliance")
+                    if 'ON' in states:
+                        init_section.append(f"(on {name})")
+                    else:
+                        init_section.append(f"(off {name})")
+                else:
+                    # Non-switchable lamps cannot be interacted with in VirtualHome
+                    non_interactable_objects.append(name)
+
+            # 7. Special case: fridge is a container
+            elif 'fridge' in name:
+                appliances.append(name)
+                objects_section.append(f"{name} - container")
+                init_section.append(f"(closed {name})")
+                init_section.append(f"(accessible {name})")
+                init_section.append(f"(can-interact agent {name})")
+
+            # 8. Check if it has CAN_OPEN property or is a door/container -> interactive
+            elif 'CAN_OPEN' in properties or category in ['Doors']:
                 interactive_objects.append(name)
                 objects_section.append(f"{name} - interactive-object")
+
+            # 9. Objects with GRABBABLE property can be picked up
+            elif 'GRABBABLE' in properties:
+                interactive_objects.append(name)
+                objects_section.append(f"{name} - interactive-object")
+                init_section.append(f"(grabbable {name})")
+
+            # 10. Everything else without interactable properties is non-interactable
+            elif not has_interactable_property:
+                non_interactable_objects.append(name)
+
+            # 11. Catch-all for objects with properties but not yet categorized
             else:
-                # Catch-all for any other objects - assume they're interactive-objects
                 interactive_objects.append(name)
                 objects_section.append(f"{name} - interactive-object")
 
@@ -479,7 +526,8 @@ class PDDLVirtualHomeSystem:
             'rooms': rooms,
             'furniture': furniture,
             'appliances': appliances,
-            'interactive_objects': interactive_objects
+            'interactive_objects': interactive_objects,
+            'non_interactable': non_interactable_objects
         }
 
         # Construct PDDL problem
@@ -583,14 +631,13 @@ class PDDLVirtualHomeSystem:
         furniture = scene_objects.get('furniture', [])
         appliances = scene_objects.get('appliances', [])
         interactive = scene_objects.get('interactive_objects', [])
+        non_interactable = scene_objects.get('non_interactable', [])
 
-        # Format object lists for prompt
+        # Format object lists for prompt (include ALL objects, no limits)
         rooms_str = ', '.join(rooms) if rooms else 'none'
         furniture_str = ', '.join(furniture) if furniture else 'none'
         appliances_str = ', '.join(appliances) if appliances else 'none'
-        interactive_str = ', '.join(interactive[:10]) if interactive else 'none'  # Limit to 10
-        if len(interactive) > 10:
-            interactive_str += f' (and {len(interactive) - 10} more)'
+        interactive_str = ', '.join(interactive) if interactive else 'none'
 
         # Add helpful hints for common object name variations
         hints = []
@@ -613,6 +660,20 @@ class PDDLVirtualHomeSystem:
 
         hints_str = '\n  '.join(hints) if hints else 'No special hints needed'
 
+        # Add warnings about non-interactable objects
+        non_interactable_warning = ''
+        if non_interactable:
+            non_interactable_str = ', '.join(non_interactable[:10])  # Show first 10
+            if len(non_interactable) > 10:
+                non_interactable_str += f' (and {len(non_interactable) - 10} more)'
+            non_interactable_warning = f"""
+WARNING - NON-INTERACTABLE OBJECTS (cannot be used in actions):
+  {non_interactable_str}
+
+  These objects exist in the scene but CANNOT be interacted with (no FIND, GRAB, SWITCHON, etc).
+  If task requires one of these objects, find an alternative from the interactable lists above.
+"""
+
         solve_prompt = f"""
 You are a PDDL planner. Given the domain and problem below, generate a valid PDDL solution plan.
 
@@ -621,24 +682,23 @@ TASK: {task['title']} - {task['description']}
 CRITICAL CONSTRAINT - AVAILABLE OBJECTS IN SCENE:
 You can ONLY use objects that actually exist in this apartment scene:
 
-  📍 ROOMS: {rooms_str}
-  🪑 FURNITURE: {furniture_str}
-  🔌 APPLIANCES: {appliances_str}
-  🎮 INTERACTIVE: {interactive_str}
+  ROOMS: {rooms_str}
+  FURNITURE: {furniture_str}
+  APPLIANCES: {appliances_str}
+  INTERACTIVE: {interactive_str}
 
-💡 OBJECT NAME HINTS:
+OBJECT NAME HINTS:
   {hints_str}
-
-DO NOT use any objects not listed above. If the task mentions objects that don't exist
-   (like "groceries", "book", "coffeetable"), either:
+{non_interactable_warning}
+DO NOT use any objects not listed above. If the task mentions objects that don't exist, either:
    1. Find the closest available substitute from the list above
    2. Simplify the task to use only available objects
    3. Skip actions involving non-existent objects
 
 Examples:
-- If task says "grab groceries" but no groceries exist → just open/close the fridge
-- If task says "turn on light" → use the exact lamp name from the hints above
-- If task says "read book" but no book exists → walk to the location and sit down
+- If task says "grab groceries" but no groceries exist -> just open/close the fridge
+- If task says "turn on light" but ceilinglamp is non-interactable -> use available lamps from hints or skip
+- If task says "read book" but no book exists -> walk to the location and sit down
 
 DOMAIN AND PROBLEM:
 {self.virtualhome_domain}

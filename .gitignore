@@ -1,16 +1,47 @@
-# Ignore everything in the robotics directory
-*
-
-# But don't ignore the robotics_llm_pddl directory
-!robotics_llm_pddl/
-!robotics_llm_pddl/**
-
-# Don't ignore the core directory
-!core/
-!core/**
-
-# Don't ignore this gitignore file
-!.gitignore
-
-# Ignore environment variables
+# Environment variables
 .env
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# App executables
+macos_exec.2.2.4.app/
+*.app/
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
+
+# Logs and temporary files
+*.log
+*.tmp
+.cache/
+
+# Output directories (if not needed in repo)
+core/Output/
+Output/
+
+# Subdirectories with their own git repos
+robotics_llm_pddl/
+virtualhome/
