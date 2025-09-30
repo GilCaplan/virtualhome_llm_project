@@ -39,8 +39,9 @@ python3.13 pddl_virtualhome_system.py
 ### Run Specific Task
 ```python
 from pddl_virtualhome_system import PDDLVirtualHomeSystem
+import os
 
-api_key = 'AIzaSyDlNUlJOXiH_30MvY-mmSpWLVsezTG3kMQ'
+api_key = os.getenv('GOOGLE_API_KEY')  # Set via environment variable
 simulator_path = '../macos_exec.2.2.4.app'
 system = PDDLVirtualHomeSystem(simulator_path, api_key)
 
