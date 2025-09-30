@@ -639,24 +639,34 @@ class PDDLVirtualHomeSystem:
         appliances_str = ', '.join(appliances) if appliances else 'none'
         interactive_str = ', '.join(interactive) if interactive else 'none'
 
-        # Add helpful hints for common object name variations
+        # Add helpful hints for object alternatives and synonyms
         hints = []
         all_objects = rooms + furniture + appliances + interactive
 
-        # Check for lights/lamps
-        lamps = [obj for obj in all_objects if 'lamp' in obj.lower() or 'light' in obj.lower()]
-        if lamps:
-            hints.append(f"For 'light', use: {', '.join(lamps)}")
+        # Define common task object mappings to actual scene objects
+        object_mappings = {
+            'light/lamp': ['lamp', 'light', 'ceilinglamp', 'ceiling_lamp', 'floorlamp', 'floor_lamp'],
+            'tv/television': ['tv', 'television', 'cpuscreen'],
+            'computer': ['computer', 'cpuscreen', 'desktop', 'laptop'],
+            'phone': ['phone', 'cellphone', 'cell_phone'],
+            'coffee': ['coffeemaker', 'coffe_maker', 'coffee_maker'],
+            'book': ['book', 'novel', 'textbook', 'magazine', 'bookshelf'],
+            'water/drink': ['cup', 'glass', 'mug', 'drinkglass', 'waterglass'],
+            'remote': ['remote_control', 'remotecontrol', 'remote'],
+            'toothbrush': ['toothbrush', 'tooth_brush'],
+            'glasses/eyewear': ['glasses', 'eyeglasses', 'spectacles'],
+        }
 
-        # Check for TV/television
-        tvs = [obj for obj in all_objects if 'tv' in obj.lower() or 'television' in obj.lower()]
-        if tvs:
-            hints.append(f"For 'tv', use: {', '.join(tvs)}")
+        # Check what's available and provide mapping hints
+        for task_term, possible_objects in object_mappings.items():
+            found = [obj for obj in all_objects if any(poss in obj.lower() for poss in possible_objects)]
+            if found:
+                hints.append(f"For '{task_term}': USE {', '.join(found[:3])}")  # Show up to 3 matches
 
-        # Check for computer-related
-        computers = [obj for obj in all_objects if 'computer' in obj.lower() or 'screen' in obj.lower()]
-        if computers:
-            hints.append(f"For 'computer', use: {', '.join(computers)}")
+        # Add container/hierarchy hints
+        containers = [obj for obj in all_objects if any(term in obj.lower() for term in ['shelf', 'cabinet', 'drawer', 'table'])]
+        if containers:
+            hints.append(f"CONTAINERS (may contain items): {', '.join(containers[:5])}")
 
         hints_str = '\n  '.join(hints) if hints else 'No special hints needed'
 
@@ -691,14 +701,20 @@ OBJECT NAME HINTS:
   {hints_str}
 {non_interactable_warning}
 DO NOT use any objects not listed above. If the task mentions objects that don't exist, either:
-   1. Find the closest available substitute from the list above
-   2. Simplify the task to use only available objects
-   3. Skip actions involving non-existent objects
+   1. Find the closest available substitute from the list above (use hints)
+   2. Use related containers (e.g., bookshelf instead of book, cupboard for items)
+   3. Simplify the task to use only available objects
+   4. Skip actions involving non-existent objects
 
-Examples:
-- If task says "grab groceries" but no groceries exist -> just open/close the fridge
-- If task says "turn on light" but ceilinglamp is non-interactable -> use available lamps from hints or skip
-- If task says "read book" but no book exists -> walk to the location and sit down
+SUBSTITUTION EXAMPLES:
+- "grab book" but no book → USE bookshelf (container), magazine, or textbook if available
+- "turn on light" → USE ceilinglamp, floorlamp, or any lamp with switch capability
+- "make coffee" but no coffeemaker → USE coffe_maker (spelling variation) or coffee_machine
+- "watch tv" but no tv → USE cpuscreen, television, or tvstand if has remote_control
+- "drink water" but no water → USE cup, glass, mug, or waterglass
+- "use phone" but no phone → USE cellphone or cell_phone
+- "grab groceries" but no groceries → just open/close fridge or walk to kitchen
+- "read book" but no book → walk to bookshelf and sit at nearby chair
 
 DOMAIN AND PROBLEM:
 {self.virtualhome_domain}
@@ -929,11 +945,11 @@ Generate the complete plan to solve: "{task['description']}"
         return mapping
 
     def _fuzzy_object_match(self, target_name, object_map):
-        """Fuzzy match object name with multiple strategies"""
+        """Fuzzy match object name with multiple strategies including spelling variations"""
+        import re
         target_lower = target_name.lower().replace('-', '_').replace(' ', '_')
 
         # Strategy 0: Strip ID suffix if present (bedroom_74 -> bedroom)
-        import re
         base_target = re.sub(r'_\d+$', '', target_lower)  # Remove _### at end
 
         # Strategy 1: Try base name without ID
@@ -945,7 +961,7 @@ Generate the complete plan to solve: "{task['description']}"
         if target_lower in object_map:
             return object_map[target_lower], object_map.get(f"{target_lower}_original", target_name)
 
-        # Strategy 3: Try variations
+        # Strategy 3: Try variations (spacing, punctuation)
         variations = [
             target_lower.replace('_', ''),
             target_lower.replace('_', '-'),
@@ -959,34 +975,119 @@ Generate the complete plan to solve: "{task['description']}"
                 print(f"  Variation matched '{target_name}' to '{var}'")
                 return object_map[var], object_map.get(f"{var}_original", var)
 
-        # Strategy 4: Partial match
-        for key in object_map.keys():
-            if '_original' not in key:
-                if base_target in key or key in base_target:
-                    print(f"  Fuzzy matched '{target_name}' to '{key}'")
-                    return object_map[key], object_map.get(f"{key}_original", key)
-
-        # Strategy 5: Semantic match (common aliases)
+        # Strategy 4: Comprehensive semantic aliases and spelling variations
+        # This handles common synonyms AND spelling variations (e.g., coffeemaker vs coffe_maker)
         aliases = {
+            # Electronics and appliances
             'tv': ['television', 'tv_stand', 'tvstand'],
             'computer': ['pc', 'desktop', 'laptop', 'cpuscreen'],
             'fridge': ['refrigerator', 'icebox'],
+            'remote': ['remote_control', 'tv_remote', 'controller', 'remotecontrol'],
+            'phone': ['cellphone', 'cell_phone', 'telephone', 'smartphone'],
+            'coffeemaker': ['coffee_maker', 'coffe_maker', 'coffemachine', 'coffee_machine'],
+
+            # Furniture
             'couch': ['sofa'],
-            'remote': ['remote_control', 'tv_remote', 'controller']
+            'desk': ['table', 'worktable', 'work_table'],
+            'bookshelf': ['bookcase', 'book_shelf'],
+
+            # Containers and receptacles
+            'cup': ['mug', 'glass', 'drinkglass'],
+            'glass': ['cup', 'drinkglass', 'drinking_glass'],
+            'bowl': ['dish'],
+
+            # Reading materials
+            'book': ['novel', 'textbook', 'magazine'],
+
+            # Lights
+            'lamp': ['light', 'ceilinglamp', 'ceiling_lamp', 'floorlamp', 'floor_lamp'],
+            'light': ['lamp', 'ceilinglamp', 'ceiling_lamp'],
+
+            # Bathroom items
+            'sink': ['washbasin', 'basin'],
+            'toothbrush': ['tooth_brush'],
+
+            # Kitchen items
+            'stove': ['cooker', 'oven'],
+            'microwave': ['micro_wave'],
+
+            # Wearables
+            'glasses': ['eyeglasses', 'spectacles'],
         }
 
+        # Check if target or any of its aliases match
         for alias_base, synonyms in aliases.items():
+            # If target matches the base or any synonym
             if base_target == alias_base or base_target in synonyms:
+                # Try all variations of the base and synonyms
                 for synonym in [alias_base] + synonyms:
                     if synonym in object_map:
                         print(f"  Semantic matched '{target_name}' to '{synonym}'")
                         return object_map[synonym], object_map.get(f"{synonym}_original", synonym)
+
+            # Also check reverse: if any key in object_map matches the alias group
+            for key in object_map.keys():
+                if '_original' not in key:
+                    # Check if the key matches the base or any synonym
+                    if key == alias_base or key in synonyms:
+                        if base_target == alias_base or base_target in synonyms:
+                            print(f"  Semantic matched '{target_name}' to '{key}' via aliases")
+                            return object_map[key], object_map.get(f"{key}_original", key)
+
+        # Strategy 5: Partial substring match (relaxed)
+        for key in object_map.keys():
+            if '_original' not in key:
+                # Match if target is substring of key or vice versa (minimum 4 chars)
+                if len(base_target) >= 4 and len(key) >= 4:
+                    if base_target in key or key in base_target:
+                        print(f"  Fuzzy matched '{target_name}' to '{key}'")
+                        return object_map[key], object_map.get(f"{key}_original", key)
+
+        # Strategy 6: Levenshtein distance for spelling errors
+        # Only calculate for reasonable length matches to avoid performance issues
+        if len(base_target) >= 4:
+            best_match = None
+            best_distance = float('inf')
+
+            for key in object_map.keys():
+                if '_original' not in key and len(key) >= 4:
+                    # Calculate simple edit distance (Levenshtein)
+                    distance = self._levenshtein_distance(base_target, key)
+                    # Accept if distance is <= 2 (allows for 1-2 character typos)
+                    if distance <= 2 and distance < best_distance:
+                        best_distance = distance
+                        best_match = key
+
+            if best_match:
+                print(f"  Spelling matched '{target_name}' to '{best_match}' (distance: {best_distance})")
+                return object_map[best_match], object_map.get(f"{best_match}_original", best_match)
 
         # Failure
         print(f"  ⚠️ Object '{target_name}' not found in scene")
         available = [k for k in object_map.keys() if '_original' not in k][:20]
         print(f"  Available objects: {available}")
         return None, None
+
+    def _levenshtein_distance(self, s1, s2):
+        """Calculate Levenshtein distance between two strings for spelling correction"""
+        if len(s1) < len(s2):
+            return self._levenshtein_distance(s2, s1)
+
+        if len(s2) == 0:
+            return len(s1)
+
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                # Cost of insertions, deletions, or substitutions
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+
+        return previous_row[-1]
 
     def _convert_pddl_action_to_vh(self, action_name, params, object_map):
         """Convert single PDDL action to VirtualHome action"""
