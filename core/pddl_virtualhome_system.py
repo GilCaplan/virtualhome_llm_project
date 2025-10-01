@@ -1384,6 +1384,108 @@ Generate the plan using ONLY objects and actions from the capability list above.
             print(f"  Failed to generate alternative plan: {e}")
             return None
 
+    def _detect_missing_objects(self, vh_script, scene_graph):
+        """Detect objects mentioned in script that don't exist in scene"""
+        import re
+
+        # Extract object names from VirtualHome script
+        script_objects = set()
+        for line in vh_script:
+            # Match patterns like [FIND] <object> or [GRAB] <object>
+            matches = re.findall(r'<(\w+)>', line)
+            script_objects.update(matches)
+
+        # Get existing object names from scene graph
+        existing_objects = {node['class_name'].lower() for node in scene_graph['nodes']}
+
+        # Find missing objects
+        missing = []
+        for obj in script_objects:
+            if obj.lower() not in existing_objects and obj not in ['char0', 'character']:
+                missing.append(obj)
+
+        return missing
+
+    def _spawn_missing_objects(self, missing_objects, scene_graph, task):
+        """Spawn missing objects into the scene"""
+        if not missing_objects:
+            return scene_graph
+
+        print(f"\n🎨 SPAWNING MISSING OBJECTS: {', '.join(missing_objects)}")
+
+        # Common missing objects and their VirtualHome counterparts
+        spawn_mappings = {
+            'book': {'class_name': 'book', 'category': 'Books', 'properties': ['GRABBABLE', 'READABLE']},
+            'groceries': {'class_name': 'food_apple', 'category': 'Food', 'properties': ['GRABBABLE', 'EATABLE']},
+            'plate': {'class_name': 'plate', 'category': 'Plates', 'properties': ['GRABBABLE', 'SURFACES']},
+            'glass': {'class_name': 'glass', 'category': 'Glasses', 'properties': ['GRABBABLE', 'RECIPIENT', 'DRINKABLE']},
+            'cup': {'class_name': 'mug', 'category': 'Mugs', 'properties': ['GRABBABLE', 'RECIPIENT']},
+            'water': {'class_name': 'waterglass', 'category': 'Glasses', 'properties': ['GRABBABLE', 'DRINKABLE']},
+            'phone': {'class_name': 'cellphone', 'category': 'Electronics', 'properties': ['GRABBABLE', 'HAS_SWITCH']},
+        }
+
+        # Find a suitable location to spawn objects (kitchen table or counter)
+        spawn_location = None
+        for node in scene_graph['nodes']:
+            if 'table' in node['class_name'].lower() or 'counter' in node['class_name'].lower():
+                if 'SURFACES' in node.get('properties', []):
+                    spawn_location = node
+                    break
+
+        if not spawn_location:
+            # Default to kitchen if no table found
+            for node in scene_graph['nodes']:
+                if 'kitchen' in node['class_name'].lower():
+                    spawn_location = node
+                    break
+
+        # Get next available ID
+        max_id = max(node['id'] for node in scene_graph['nodes'])
+        next_id = max_id + 1
+
+        # Add missing objects to scene graph
+        new_nodes = []
+        for obj in missing_objects:
+            obj_lower = obj.lower()
+            if obj_lower in spawn_mappings:
+                spawn_info = spawn_mappings[obj_lower]
+                new_node = {
+                    'id': next_id,
+                    'class_name': spawn_info['class_name'],
+                    'category': spawn_info['category'],
+                    'properties': spawn_info['properties'],
+                    'states': [],
+                    'bounding_box': spawn_location.get('bounding_box', {}) if spawn_location else {}
+                }
+                new_nodes.append(new_node)
+                print(f"  ✅ Spawning {spawn_info['class_name']} (ID: {next_id}) at {spawn_location['class_name'] if spawn_location else 'kitchen'}")
+                next_id += 1
+            else:
+                print(f"  ⚠️  No spawn mapping for '{obj}' - skipping")
+
+        # Create expanded scene graph
+        if new_nodes:
+            expanded_graph = {
+                'nodes': scene_graph['nodes'] + new_nodes,
+                'edges': scene_graph['edges']
+            }
+
+            # Use VirtualHome's expand_scene to add objects
+            try:
+                self._initialize_simulator()
+                success, message = self.comm.expand_scene(expanded_graph)
+                if success:
+                    print(f"  ✅ Objects successfully spawned in VirtualHome")
+                    return expanded_graph
+                else:
+                    print(f"  ⚠️  Failed to spawn objects: {message}")
+                    return scene_graph
+            except Exception as e:
+                print(f"  ⚠️  Error spawning objects: {e}")
+                return scene_graph
+
+        return scene_graph
+
     def execute_and_verify(self, vh_script, task):
         """Step 5: Execute script and verify completion (headless)"""
         print("Step 5: Executing script and verifying completion")
@@ -1676,6 +1778,16 @@ Generate the plan using ONLY objects and actions from the capability list above.
 
             # Step 4: Convert to VirtualHome script
             vh_script = self.pddl_to_virtualhome_script(pddl_solution)
+
+            # Step 4.5: Detect and spawn missing objects
+            missing_objects = self._detect_missing_objects(vh_script, task['initial_graph'])
+            if missing_objects:
+                updated_graph = self._spawn_missing_objects(missing_objects, task['initial_graph'], task)
+                if updated_graph != task['initial_graph']:
+                    # Update task with new scene graph
+                    task['initial_graph'] = updated_graph
+                    # Regenerate object map with spawned objects
+                    self.pddl_to_virtualhome_script(pddl_solution)  # Refresh object mapping
 
             # Step 5: Execute and verify
             success, verification = self.execute_and_verify(vh_script, task)
