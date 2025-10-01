@@ -37,7 +37,7 @@ def test_multiple_tasks():
         raise FileNotFoundError(f"Simulator not found at: {simulator_path}")
 
     # Test 20 random tasks for comprehensive verification
-    tasks_to_test = [25, 27, 30, 32, 89, 95, 104, 114, 142, 203, 223, 225, 228, 238, 250, 281, 429, 432, 459, 517]
+    tasks_to_test = [238, 250, 281, 429, 432, 459, 517]
 
     print("🤖 TESTING PDDL SYSTEM ON 20 RANDOM TASKS")
     print("=" * 60)

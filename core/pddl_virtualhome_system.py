@@ -760,10 +760,18 @@ CRITICAL RULES:
    - If [OPEN] → can CLOSE
 
 PLANNING STRATEGY:
-1. Identify which objects from the capability list can help solve the task
-2. Check if each object has the properties needed for required actions
-3. If exact object doesn't exist, find similar objects with compatible properties
-4. Build plan using only valid object-action combinations from the list above
+1. **ONLY use objects from the capability list above** - no assumptions about missing objects
+2. If task mentions object NOT in list, find closest match or skip that step
+3. Prefer simple, direct plans with few actions (VirtualHome has execution constraints)
+4. Focus on achievable goals with available objects
+5. Examples of VALID substitutions from capability list:
+   - "get water" → use objects with DRINKABLE or RECIPIENT property
+   - "read book" → use objects with READABLE property
+   - "turn on lights" → use objects with HAS_SWITCH property
+   - "sit down" → use objects with SITTABLE property
+
+CRITICAL: VirtualHome simulator has strict execution constraints beyond properties.
+Keep plans simple and use only objects explicitly listed in capabilities above.
 
 PDDL DOMAIN AND PROBLEM:
 {self.virtualhome_domain}
