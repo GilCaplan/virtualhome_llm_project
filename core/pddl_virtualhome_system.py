@@ -521,13 +521,17 @@ class PDDLVirtualHomeSystem:
             else:
                 goal_conditions.append("(at agent bedroom)")  # Default
 
+        # Build object capability map from scene graph
+        object_capabilities = self._build_object_capabilities(scene_graph)
+
         # Store categorized objects for LLM prompt (after all objects are added)
         self._current_scene_objects = {
             'rooms': rooms,
             'furniture': furniture,
             'appliances': appliances,
             'interactive_objects': interactive_objects,
-            'non_interactable': non_interactable_objects
+            'non_interactable': non_interactable_objects,
+            'capabilities': object_capabilities
         }
 
         # Construct PDDL problem
@@ -566,6 +570,67 @@ class PDDLVirtualHomeSystem:
             print(f"Warning: Could not save PDDL file: {e}")
 
         return pddl_problem
+
+    def _build_object_capabilities(self, scene_graph):
+        """
+        Build a mapping from objects to their valid actions based on properties.
+        This creates a generic, property-driven capability system.
+
+        Based on VirtualHome documentation at virtualhome/simulation/README.md
+        """
+        # Property-to-action mapping from VirtualHome documentation
+        PROPERTY_ACTION_MAP = {
+            'GRABBABLE': ['FIND', 'GRAB'],
+            'CAN_OPEN': ['FIND', 'OPEN', 'CLOSE'],
+            'HAS_SWITCH': ['FIND', 'SWITCHON', 'SWITCHOFF', 'TYPE'],
+            'SITTABLE': ['FIND', 'SIT'],
+            'LOOKABLE': ['FIND', 'LOOKAT'],
+            'RECIPIENT': ['FIND', 'DRINK', 'POUR_INTO'],
+            'SURFACES': ['FIND', 'PUTBACK_ON'],
+            'CONTAINERS': ['FIND', 'PUTIN'],
+            'READABLE': ['FIND', 'READ'],
+            'DRINKABLE': ['FIND', 'DRINK'],
+            'EATABLE': ['FIND', 'EAT'],
+            'POURABLE': ['FIND', 'POUR'],
+            'MOVABLE': ['FIND', 'MOVE', 'PUSH', 'PULL'],
+            'HAS_PLUG': ['FIND', 'PLUGIN', 'PLUGOUT'],
+            'CLOTHES': ['FIND', 'PUTON', 'PUTOFF'],
+            'LIEABLE': ['FIND', 'LIE'],
+            'CUTTABLE': ['FIND', 'CUT']
+        }
+
+        # Build capability map for each object
+        capabilities = {}
+
+        for node in scene_graph['nodes']:
+            obj_name = node['class_name'].lower().replace(' ', '_')
+            properties = node.get('properties', [])
+            states = node.get('states', [])
+
+            # Collect all valid actions for this object based on its properties
+            valid_actions = set()
+            relevant_properties = []
+            relevant_states = []
+
+            for prop in properties:
+                if prop in PROPERTY_ACTION_MAP:
+                    relevant_properties.append(prop)
+                    valid_actions.update(PROPERTY_ACTION_MAP[prop])
+
+            # Track current states
+            for state in states:
+                if state in ['ON', 'OFF', 'OPEN', 'CLOSED', 'PLUGGED_IN', 'PLUGGED_OUT', 'CLEAN', 'DIRTY']:
+                    relevant_states.append(state)
+
+            # Only track objects with interactable properties
+            if valid_actions:
+                capabilities[obj_name] = {
+                    'actions': sorted(list(valid_actions)),
+                    'properties': relevant_properties,
+                    'states': relevant_states
+                }
+
+        return capabilities
 
     def _validate_pddl_plan(self, pddl_solution):
         """Validate LLM-generated PDDL plan"""
@@ -625,122 +690,93 @@ class PDDLVirtualHomeSystem:
         """Step 3: Use Gemini to solve PDDL problem"""
         print("Step 3: Solving PDDL with Gemini 1.5 Flash")
 
-        # Get available objects from the scene
+        # Get available objects and their capabilities from the scene
         scene_objects = getattr(self, '_current_scene_objects', {})
+        capabilities = scene_objects.get('capabilities', {})
+
+        # Build generic capability description for LLM
+        capability_descriptions = []
+
+        for obj_name, obj_caps in sorted(capabilities.items()):
+            actions = obj_caps['actions']
+            properties = obj_caps['properties']
+            states = obj_caps['states']
+
+            # Format: objectname(properties)[current_states] -> valid_actions
+            props_str = ','.join(properties) if properties else ''
+            states_str = ','.join(states) if states else ''
+            actions_str = ', '.join(actions)
+
+            desc = f"{obj_name}"
+            if props_str:
+                desc += f"({props_str})"
+            if states_str:
+                desc += f"[{states_str}]"
+            desc += f" -> {actions_str}"
+
+            capability_descriptions.append(desc)
+
+        # Group objects by rooms for spatial understanding
         rooms = scene_objects.get('rooms', [])
-        furniture = scene_objects.get('furniture', [])
-        appliances = scene_objects.get('appliances', [])
-        interactive = scene_objects.get('interactive_objects', [])
-        non_interactable = scene_objects.get('non_interactable', [])
+        rooms_str = ', '.join(rooms) if rooms else 'none available'
 
-        # Format object lists for prompt (include ALL objects, no limits)
-        rooms_str = ', '.join(rooms) if rooms else 'none'
-        furniture_str = ', '.join(furniture) if furniture else 'none'
-        appliances_str = ', '.join(appliances) if appliances else 'none'
-        interactive_str = ', '.join(interactive) if interactive else 'none'
-
-        # Add helpful hints for object alternatives and synonyms
-        hints = []
-        all_objects = rooms + furniture + appliances + interactive
-
-        # Define common task object mappings to actual scene objects
-        object_mappings = {
-            'light/lamp': ['lamp', 'light', 'ceilinglamp', 'ceiling_lamp', 'floorlamp', 'floor_lamp'],
-            'tv/television': ['tv', 'television', 'cpuscreen'],
-            'computer': ['computer', 'cpuscreen', 'desktop', 'laptop'],
-            'phone': ['phone', 'cellphone', 'cell_phone'],
-            'coffee': ['coffeemaker', 'coffe_maker', 'coffee_maker'],
-            'book': ['book', 'novel', 'textbook', 'magazine', 'bookshelf'],
-            'water/drink': ['cup', 'glass', 'mug', 'drinkglass', 'waterglass'],
-            'remote': ['remote_control', 'remotecontrol', 'remote'],
-            'toothbrush': ['toothbrush', 'tooth_brush'],
-            'glasses/eyewear': ['glasses', 'eyeglasses', 'spectacles'],
-        }
-
-        # Check what's available and provide mapping hints
-        for task_term, possible_objects in object_mappings.items():
-            found = [obj for obj in all_objects if any(poss in obj.lower() for poss in possible_objects)]
-            if found:
-                hints.append(f"For '{task_term}': USE {', '.join(found[:3])}")  # Show up to 3 matches
-
-        # Add container/hierarchy hints
-        containers = [obj for obj in all_objects if any(term in obj.lower() for term in ['shelf', 'cabinet', 'drawer', 'table'])]
-        if containers:
-            hints.append(f"CONTAINERS (may contain items): {', '.join(containers[:5])}")
-
-        hints_str = '\n  '.join(hints) if hints else 'No special hints needed'
-
-        # Add warnings about non-interactable objects
-        non_interactable_warning = ''
-        if non_interactable:
-            non_interactable_str = ', '.join(non_interactable[:10])  # Show first 10
-            if len(non_interactable) > 10:
-                non_interactable_str += f' (and {len(non_interactable) - 10} more)'
-            non_interactable_warning = f"""
-WARNING - NON-INTERACTABLE OBJECTS (cannot be used in actions):
-  {non_interactable_str}
-
-  These objects exist in the scene but CANNOT be interacted with (no FIND, GRAB, SWITCHON, etc).
-  If task requires one of these objects, find an alternative from the interactable lists above.
-"""
+        # Format capability descriptions for prompt
+        capabilities_text = '\n'.join(capability_descriptions[:50])  # Limit to 50 most relevant
 
         solve_prompt = f"""
-You are a PDDL planner. Given the domain and problem below, generate a valid PDDL solution plan.
+You are a PDDL planner for VirtualHome simulator. Generate a plan to solve the given task.
 
 TASK: {task['title']} - {task['description']}
 
-CRITICAL CONSTRAINT - AVAILABLE OBJECTS IN SCENE:
-You can ONLY use objects that actually exist in this apartment scene:
+ENVIRONMENT STRUCTURE:
+Available rooms: {rooms_str}
 
-  ROOMS: {rooms_str}
-  FURNITURE: {furniture_str}
-  APPLIANCES: {appliances_str}
-  INTERACTIVE: {interactive_str}
+OBJECT CAPABILITIES (object_name(properties)[states] -> valid_actions):
+Each line shows an object, its properties, current states, and valid VirtualHome actions.
 
-OBJECT NAME HINTS:
-  {hints_str}
-{non_interactable_warning}
-DO NOT use any objects not listed above. If the task mentions objects that don't exist, either:
-   1. Find the closest available substitute from the list above (use hints)
-   2. Use related containers (e.g., bookshelf instead of book, cupboard for items)
-   3. Simplify the task to use only available objects
-   4. Skip actions involving non-existent objects
+{capabilities_text}
 
-SUBSTITUTION EXAMPLES:
-- "grab book" but no book → USE bookshelf (container), magazine, or textbook if available
-- "turn on light" → USE ceilinglamp, floorlamp, or any lamp with switch capability
-- "make coffee" but no coffeemaker → USE coffe_maker (spelling variation) or coffee_machine
-- "watch tv" but no tv → USE cpuscreen, television, or tvstand if has remote_control
-- "drink water" but no water → USE cup, glass, mug, or waterglass
-- "use phone" but no phone → USE cellphone or cell_phone
-- "grab groceries" but no groceries → just open/close fridge or walk to kitchen
-- "read book" but no book → walk to bookshelf and sit at nearby chair
+FORMAT LEGEND:
+- object_name: The exact name to use in your plan
+- (properties): Object's capabilities (GRABBABLE, CAN_OPEN, HAS_SWITCH, SITTABLE, etc.)
+- [states]: Current state (ON, OFF, OPEN, CLOSED, etc.)
+- -> actions: Valid VirtualHome actions for this object
 
-DOMAIN AND PROBLEM:
+CRITICAL RULES:
+1. Use ONLY object names listed above - exact spelling required
+2. Use ONLY actions listed for each specific object
+3. Properties determine valid actions:
+   - GRABBABLE → can FIND, GRAB
+   - CAN_OPEN → can FIND, OPEN, CLOSE
+   - HAS_SWITCH → can FIND, SWITCHON, SWITCHOFF
+   - SITTABLE → can FIND, SIT
+   - CONTAINERS → can FIND, PUTIN
+   - SURFACES → can FIND, PUTBACK_ON
+4. Respect current states:
+   - If [OFF] → can SWITCHON
+   - If [ON] → can SWITCHOFF
+   - If [CLOSED] → can OPEN
+   - If [OPEN] → can CLOSE
+
+PLANNING STRATEGY:
+1. Identify which objects from the capability list can help solve the task
+2. Check if each object has the properties needed for required actions
+3. If exact object doesn't exist, find similar objects with compatible properties
+4. Build plan using only valid object-action combinations from the list above
+
+PDDL DOMAIN AND PROBLEM:
 {self.virtualhome_domain}
 
 {pddl_problem}
 
-REQUIREMENTS:
-1. Return a valid sequence of PDDL actions that achieves the goal
-2. Use ONLY objects that exist in the scene (see list above)
-3. Use the exact action names and parameters from the domain
-4. Ensure preconditions are satisfied before each action
-5. Format your response as a structured plan
-
-OUTPUT FORMAT (return exactly this structure):
+OUTPUT FORMAT:
 (:plan
-  (walk agent kitchen bedroom)
-  (find-object agent computer bedroom)
-  (find-object agent chair bedroom)
-  (sit-down agent chair)
-  (switch-on agent computer)
-  (find-object agent keyboard bedroom)
-  (touch-object agent keyboard)
-  (switch-off agent computer)
+  (action1 agent param1 param2)
+  (action2 agent param1)
+  ...
 )
 
-Generate the complete plan to solve: "{task['description']}"
+Generate the plan using ONLY objects and actions from the capability list above.
 """
 
         max_retries = 3
