@@ -46,11 +46,12 @@ class PDDLVirtualHomeSystem:
     5. Generate Video
     """
 
-    def __init__(self, simulator_path, api_key, port=None):
+    def __init__(self, simulator_path, api_key, port=None, scene_name="TrimmedTestScene1_graph"):
         self.simulator_path = simulator_path
         self.comm = None
         self.port = port
         self.current_task_id = None
+        self.scene_name = scene_name  # Allow configurable scenes
 
         # Validate inputs
         if not api_key:
@@ -189,7 +190,7 @@ class PDDLVirtualHomeSystem:
             raise ValueError(f"task_id must be non-negative, got {task_id}")
 
         # Load tasks from dataset
-        scene_name = "TrimmedTestScene1_graph"
+        scene_name = self.scene_name  # Use configurable scene name
         base_path = os.path.join(os.path.dirname(__file__), '..',
                                 'virtualhome/virtualhome/dataset/programs_processed_precond_nograb_morepreconds')
 
