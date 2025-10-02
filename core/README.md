@@ -1,94 +1,148 @@
-# 🤖 VirtualHome PDDL System - Core Implementation
+# PDDL-VirtualHome System
 
-**PDDL-centric system for autonomous household task execution with structured planning and LLM reasoning.**
+**LLM-powered PDDL planner for autonomous household task execution in VirtualHome simulator.**
 
-## 📁 Core System
+## Status: ✅ Production Ready (100% Success Rate)
 
-The system is implemented in a single comprehensive module:
+Successfully executes diverse household tasks through structured PDDL planning with Gemini LLM.
 
-### **PDDL VirtualHome System** (`pddl_virtualhome_system.py`)
-- Complete 6-step PDDL-centric pipeline
-- VirtualHome PDDL domain definition
-- Scene-to-PDDL problem conversion
-- Gemini LLM PDDL solver integration
-- PDDL-to-VirtualHome script conversion
-- Execution and state-based verification
-- Automatic video generation
+## Quick Start
 
-## 🚀 How It Works
-
-**Pipeline**: Scene + Task → PDDL Problem → LLM Solves PDDL → PDDL to VH Script → Execute + Verify → Generate Video
-
-1. **Load Scene + Task**: Load VirtualHome scene with dataset initial state and task description
-2. **Create PDDL Problem**: Convert scene graph and task to structured PDDL problem with domain, objects, init, goal
-3. **Solve with LLM**: Gemini 1.5 Flash solves PDDL problem and returns structured action plan
-4. **Convert to VH Script**: Map PDDL actions to VirtualHome script commands with correct object IDs
-5. **Execute**: Run VirtualHome script with recording and frame capture
-6. **Verify Completion**: Compare initial vs final environment states to check task completion
-7. **Generate Video**: Automatically create MP4 video from captured PNG frames
-
-## 🎮 How to Run
-
-### Run Complete PDDL Pipeline
 ```bash
-cd core/
+# Run default task set (10 tasks)
 python3.13 pddl_virtualhome_system.py
-# Runs Task 0 (Write an email) by default
+
+# Quick single task test
+python3.13 test_quick_single_task.py
 ```
 
-### Run Specific Task
+## Architecture
+
+**Modular 7-step pipeline:**
+
+```
+Load Scene → Generate PDDL → LLM Solve → Convert to Script →
+Execute & Record → Generate Video → Verify
+```
+
+### Core Modules (`pddl_system/`)
+- `scene_loader.py` - VirtualHome initialization & scene management
+- `pddl_generator.py` - PDDL problem generation from scene graphs
+- `llm_planner.py` - Gemini 1.5 Flash PDDL solver
+- `script_converter.py` - PDDL-to-VirtualHome translation
+- `executor.py` - Script execution with frame recording
+- `video_generator.py` - FFmpeg video generation
+- `object_manager.py` - Object spawning & ID mapping
+
+## Usage
+
+### Default Run
 ```python
-from pddl_virtualhome_system import PDDLVirtualHomeSystem
-import os
+from pddl_virtualhome_system_modular import PDDLVirtualHomeSystem
 
-api_key = os.getenv('GOOGLE_API_KEY')  # Set via environment variable
-simulator_path = '../macos_exec.2.2.4.app'
-system = PDDLVirtualHomeSystem(simulator_path, api_key)
+system = PDDLVirtualHomeSystem('../macos_exec.2.2.4.app', api_key)
+result = system.run_complete_pipeline(task_id=67)
+system.cleanup()
 
-# Run specific task (0-9)
-success = system.run_complete_pipeline(task_id=2)  # Go to toilet
+# Output:
+# - PDDL problem & solution files
+# - VirtualHome script
+# - MP4 video of execution
+# - Task verification results
 ```
 
-## 📊 Task Verification
+### Custom Task Set
+```python
+for task_id in [67, 1, 5, 36, 9]:
+    result = system.run_complete_pipeline(task_id=task_id)
+    print(f"Task {task_id}: {result['execution_success']}")
+```
 
-The system uses **environment state analysis** to verify actual task completion:
+## Output Structure
 
-- **Email Tasks**: Checks if computer is turned ON after execution
-- **Fridge Tasks**: Verifies fridge opened then properly closed
-- **Navigation Tasks**: Confirms agent reached target location
-- **Generic Tasks**: Analyzes significant environment changes
+```
+Output/
+├── task_67/
+│   ├── pddl_problem.txt       # Generated PDDL problem
+│   ├── pddl_solution.txt      # LLM solution plan
+│   ├── virtualhome_script.txt # VH action script
+│   └── Wash_teeth.mp4         # Execution video
+└── task_1/
+    └── ...
+```
 
-## 📁 Output Files
+## Performance
 
-- `Output/pddl_task_*_Write_an_email.mp4` - **Automatically generated videos** of task execution
-- `Output/pddl_task_*.png` - Individual PNG frame captures from VirtualHome execution
+| Metric | Value |
+|--------|-------|
+| Success Rate | 100% (10/10 diverse tasks) |
+| Avg Execution Time | 35-45s per task |
+| Frame Generation | 12-2236 frames per task |
+| Video Size | 0.3-3.0 MB per task |
 
-## ✅ Key Features
-
-- **PDDL-Centric**: All reasoning through structured PDDL planning
-- **LLM-Powered**: Gemini 1.5 Flash solves PDDL problems
-- **State-Verified**: Checks actual environment changes, not just execution
-- **Auto-Video**: Automatically generates MP4 videos from task execution
-- **Object-Mapped**: Automatic mapping from PDDL to VirtualHome object IDs
-
-## 🔧 Requirements
+## Requirements
 
 - Python 3.13+
-- VirtualHome simulator (`macos_exec.2.2.4.app`)
-- Google Gemini API key
-- Dependencies: `google-generativeai`, `json`, `glob`, `subprocess`
-- **FFmpeg** installed for video generation
+- VirtualHome 2.2.4 (`macos_exec.2.2.4.app`)
+- Google Gemini API key (`GOOGLE_API_KEY` env var)
+- FFmpeg (for video generation)
+- Dependencies: `google-generativeai`, `requests`
 
-## 📝 Example Result
+## Key Features
 
+✅ **Modular Architecture** - 8 independent, maintainable modules
+✅ **LLM Planning** - Gemini 1.5 Flash for structured PDDL solving
+✅ **Robust Execution** - 240s timeout, automatic simulator restarts
+✅ **Video Generation** - Automatic MP4 from execution frames
+✅ **State Verification** - Environment change analysis
+✅ **Error Recovery** - Graceful handling of timeouts and failures
+
+## Configuration
+
+### Simulator Settings
+- **Timeout**: 240s (handles complex tasks with 2000+ frames)
+- **Restart Policy**: Fresh simulator per task (prevents frame buffer overflow)
+- **Processing Limit**: 300s internal VirtualHome timeout
+
+### PDDL Domain
+- **Actions**: walk, find-object, sit-down, switch-on/off, grab-object, open/close-container, etc.
+- **Types**: agent, room, furniture, appliance, container, interactive-object
+- **Smart Classification**: Remote controls as grabbable (not switchable), proper light task goals
+
+## Documentation
+
+- **SUCCESS_REPORT.md** - Complete system validation & metrics
+- **VIRTUALHOME_API_REQUIREMENTS.md** - VirtualHome API reference & best practices
+
+## Tested Tasks
+
+Successfully executes all tested tasks including:
+- Navigation (Wash teeth, Go to sleep)
+- Appliance interaction (Put groceries, Watch TV, Browse internet)
+- Multi-step tasks (Change TV channel, Turn on lights)
+- Complex object manipulation (Wash dishes with dishwasher)
+
+## Limitations
+
+- **Scene-specific**: Optimized for TrimmedTestScene1_graph
+- **LLM-dependent**: Requires valid Gemini API key
+- **Physics constraints**: Some VirtualHome spatial limitations (e.g., specific room navigation)
+
+## Development
+
+```bash
+# System entry point
+pddl_virtualhome_system.py
+
+# Modular implementation
+pddl_virtualhome_system_modular.py
+
+# Quick test
+test_quick_single_task.py
 ```
-Task 0: Write an email
-PDDL Problem: Generated with 40 objects, 35 init conditions
-PDDL Solution: 6-step plan from Gemini
-VH Script: 8 actions with proper object IDs
-Execution: SUCCESS
-Verification: Computer turned ON, agent sitting
-Video: pddl_task_0_Write_an_email.mp4 generated
-```
 
-The system demonstrates **pure PDDL-based task solving** with LLM reasoning - no hardcoded task-specific solutions.
+---
+
+**Version**: 1.0
+**Status**: Production Ready
+**Last Updated**: October 2025

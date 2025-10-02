@@ -48,7 +48,7 @@ def main():
     api_key = os.getenv('GOOGLE_API_KEY')
     simulator_path = '../macos_exec.2.2.4.app'
     scene_name = 'TrimmedTestScene1_graph'
-    default_tasks = [67, 1, 5, 36]  # Wash teeth, Put groceries, Change TV channel, Watch TV
+    default_tasks = [67, 1, 5, 36, 5, 7, 9, 12, 27, 39, 69]  # Wash teeth, Put groceries, Change TV channel, Watch TV
 
     print("=" * 80)
     print("PDDL-VIRTUALHOME SYSTEM - DEFAULT RUN")
