@@ -57,36 +57,6 @@ class PDDLGenerator:
         :effect (and (close ?agent ?target))
       )
 
-      (:action run
-        :parameters (?agent - agent ?target - object)
-        :precondition (and (not (sitting ?agent)) (reachable ?target))
-        :effect (and (close ?agent ?target))
-      )
-
-      (:action walktowards
-        :parameters (?agent - agent ?target - object)
-        :precondition (and (not (sitting ?agent)) (reachable ?target))
-        :effect (and (close ?agent ?target))
-      )
-
-      (:action walkforward
-        :parameters (?agent - agent)
-        :precondition (not (sitting ?agent))
-        :effect (and) ; moves 1 meter forward
-      )
-
-      (:action turnleft
-        :parameters (?agent - agent)
-        :precondition (not (sitting ?agent))
-        :effect (and) ; rotates 30° left
-      )
-
-      (:action turnright
-        :parameters (?agent - agent)
-        :precondition (not (sitting ?agent))
-        :effect (and) ; rotates 30° right
-      )
-
       ;; ---------------------------------------------------------------------------
       ;; SITTING / STANDING
       ;; ---------------------------------------------------------------------------
@@ -197,28 +167,6 @@ class PDDLGenerator:
           (close ?agent ?app)
         )
         :effect (and (off ?app) (not (on ?app)))
-      )
-
-      ;; ---------------------------------------------------------------------------
-      ;; OTHER INTERACTIONS
-      ;; ---------------------------------------------------------------------------
-
-      (:action drink
-        :parameters (?agent - agent ?obj - object)
-        :precondition (and (close ?agent ?obj) (drinkable ?obj))
-        :effect (and) ; consume from object
-      )
-
-      (:action touch
-        :parameters (?agent - agent ?obj - object)
-        :precondition (and (close ?agent ?obj) (reachable ?obj))
-        :effect (and) ; touch interaction
-      )
-
-      (:action lookat
-        :parameters (?agent - agent ?obj - object)
-        :precondition (and (facing ?agent ?obj) (reachable ?obj))
-        :effect (and) ; agent now focused on object
       )
     )
     """
