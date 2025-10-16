@@ -9,157 +9,219 @@ class PDDLGenerator:
 
     # PDDL Domain for VirtualHome
     VIRTUALHOME_DOMAIN = """
-(define (domain virtualhome)
-  (:requirements :strips :typing)
+    (define (domain virtualhome)
+      (:requirements :strips :typing)
 
-  (:types
-    agent
-    room
-    furniture
-    appliance
-    container
-    object
-  )
+      (:types
+        agent
+        room
+        furniture
+        appliance
+        container
+        object
+      )
 
-  (:predicates
-    ;; Agent location and state
-    (at ?agent - agent ?loc - room)
-    (sitting ?agent - agent)
-    (holding ?agent - agent ?obj - object)
-    (facing ?agent - agent ?obj - object)
-    (close ?agent - agent ?obj - object)
+      (:predicates
+        ;; --- Agent state ---
+        (at ?agent - agent ?loc - room)                 ; agent is currently in a room
+        (sitting ?agent - agent)                        ; agent is sitting
+        (holding ?agent - agent ?obj - object)          ; agent is holding an object
+        (facing ?agent - agent ?obj - object)           ; agent is facing an object
+        (close ?agent - agent ?obj - object)            ; agent is near enough to interact
+        (has-free-hand ?agent - agent)                  ; agent has a free hand for grabbing
 
-    ;; Object states
-    (on ?obj - appliance)
-    (off ?obj - appliance)
-    (open ?obj - container)
-    (closed ?obj - container)
-    (in-container ?obj - object ?container - container)
-    (on-surface ?obj - object ?surf - object)
-    (grabbable ?obj - object)
-    (drinkable ?obj - object)
-    (switchable ?obj - appliance)
+        ;; --- Object states ---
+        (grabbable ?obj - object)                       ; object can be grabbed
+        (drinkable ?obj - object)                       ; object can be drunk from
+        (switchable ?obj - appliance)                   ; object can be turned on/off
+        (on ?obj - appliance)                           ; appliance is on
+        (off ?obj - appliance)                          ; appliance is off
+        (open ?obj - container)                         ; container is open
+        (closed ?obj - container)                       ; container is closed
+        (sittable ?obj - furniture)                     ; object can be sat on
+        (reachable ?obj - object)                       ; object is not inside closed container
 
-    ;; Spatial relationships
-    (in-room ?obj - object ?room - room)
-  )
+        ;; --- Spatial relations ---
+        (in-room ?obj - object ?room - room)            ; object is located in a room
+        (in-container ?obj - object ?container - container) ; object is inside container
+        (on-surface ?obj - object ?surf - object)       ; object is placed on top of another
+      )
 
-  ;; --- Movement actions ---
+      ;; ---------------------------------------------------------------------------
+      ;; MOVEMENT ACTIONS
+      ;; ---------------------------------------------------------------------------
 
-  (:action walk
-    :parameters (?agent - agent ?dest - room)
-    :precondition (and (not (sitting ?agent)))
-    :effect (and (forall (?r - room) (not (at ?agent ?r))) (at ?agent ?dest))
-  )
+      (:action walk
+        :parameters (?agent - agent ?target - object)
+        :precondition (and (not (sitting ?agent)) (reachable ?target))
+        :effect (and (close ?agent ?target))
+      )
 
-  (:action run
-    :parameters (?agent - agent ?dest - room)
-    :precondition (and (not (sitting ?agent)))
-    :effect (and (forall (?r - room) (not (at ?agent ?r))) (at ?agent ?dest))
-  )
+      (:action run
+        :parameters (?agent - agent ?target - object)
+        :precondition (and (not (sitting ?agent)) (reachable ?target))
+        :effect (and (close ?agent ?target))
+      )
 
-  (:action walkforward
-    :parameters (?agent - agent)
-    :precondition (not (sitting ?agent))
-    :effect (and) ; move forward, abstracted
-  )
+      (:action walktowards
+        :parameters (?agent - agent ?target - object)
+        :precondition (and (not (sitting ?agent)) (reachable ?target))
+        :effect (and (close ?agent ?target))
+      )
 
-  (:action turnleft
-    :parameters (?agent - agent)
-    :precondition (not (sitting ?agent))
-    :effect (and) ; orientation updated
-  )
+      (:action walkforward
+        :parameters (?agent - agent)
+        :precondition (not (sitting ?agent))
+        :effect (and) ; moves 1 meter forward
+      )
 
-  (:action turnright
-    :parameters (?agent - agent)
-    :precondition (not (sitting ?agent))
-    :effect (and) ; orientation updated
-  )
+      (:action turnleft
+        :parameters (?agent - agent)
+        :precondition (not (sitting ?agent))
+        :effect (and) ; rotates 30° left
+      )
 
-  ;; --- Sitting / Standing ---
+      (:action turnright
+        :parameters (?agent - agent)
+        :precondition (not (sitting ?agent))
+        :effect (and) ; rotates 30° right
+      )
 
-  (:action sit
-    :parameters (?agent - agent ?seat - furniture)
-    :precondition (and (not (sitting ?agent)) (close ?agent ?seat))
-    :effect (sitting ?agent)
-  )
+      ;; ---------------------------------------------------------------------------
+      ;; SITTING / STANDING
+      ;; ---------------------------------------------------------------------------
 
-  (:action standup
-    :parameters (?agent - agent)
-    :precondition (sitting ?agent)
-    :effect (not (sitting ?agent))
-  )
+      (:action sit
+        :parameters (?agent - agent ?seat - furniture)
+        :precondition (and
+          (not (sitting ?agent))
+          (close ?agent ?seat)
+          (sittable ?seat)
+        )
+        :effect (sitting ?agent)
+      )
 
-  ;; --- Manipulation actions ---
+      (:action standup
+        :parameters (?agent - agent)
+        :precondition (sitting ?agent)
+        :effect (not (sitting ?agent))
+      )
 
-  (:action grab
-    :parameters (?agent - agent ?obj - object)
-    :precondition (and (not (sitting ?agent)) (grabbable ?obj) (close ?agent ?obj) (not (exists (?o - object) (holding ?agent ?o))))
-    :effect (holding ?agent ?obj)
-  )
+      ;; ---------------------------------------------------------------------------
+      ;; OBJECT MANIPULATION
+      ;; ---------------------------------------------------------------------------
 
-  (:action put
-    :parameters (?agent - agent ?obj - object ?surface - object)
-    :precondition (and (holding ?agent ?obj) (close ?agent ?surface))
-    :effect (and (not (holding ?agent ?obj)) (on-surface ?obj ?surface))
-  )
+      (:action grab
+        :parameters (?agent - agent ?obj - object)
+        :precondition (and
+          (grabbable ?obj)
+          (reachable ?obj)
+          (close ?agent ?obj)
+          (has-free-hand ?agent)
+        )
+        :effect (and
+          (holding ?agent ?obj)
+          (not (has-free-hand ?agent))
+        )
+      )
 
-  (:action putin
-    :parameters (?agent - agent ?obj - object ?cont - container)
-    :precondition (and (holding ?agent ?obj) (open ?cont) (close ?agent ?cont))
-    :effect (and (not (holding ?agent ?obj)) (in-container ?obj ?cont))
-  )
+      (:action put
+        :parameters (?agent - agent ?obj - object ?surf - object)
+        :precondition (and (holding ?agent ?obj) (close ?agent ?surf))
+        :effect (and
+          (not (holding ?agent ?obj))
+          (on-surface ?obj ?surf)
+          (has-free-hand ?agent)
+        )
+      )
 
-  ;; --- Container interactions ---
+      (:action putin
+        :parameters (?agent - agent ?obj - object ?cont - container)
+        :precondition (and
+          (holding ?agent ?obj)
+          (open ?cont)
+          (close ?agent ?cont)
+        )
+        :effect (and
+          (not (holding ?agent ?obj))
+          (in-container ?obj ?cont)
+          (has-free-hand ?agent)
+        )
+      )
 
-  (:action open
-    :parameters (?agent - agent ?cont - container)
-    :precondition (and (closed ?cont) (close ?agent ?cont))
-    :effect (and (open ?cont) (not (closed ?cont)))
-  )
+      ;; ---------------------------------------------------------------------------
+      ;; CONTAINER INTERACTIONS
+      ;; ---------------------------------------------------------------------------
 
-  (:action close
-    :parameters (?agent - agent ?cont - container)
-    :precondition (and (open ?cont) (close ?agent ?cont))
-    :effect (and (closed ?cont) (not (open ?cont)))
-  )
+      (:action open
+        :parameters (?agent - agent ?cont - container)
+        :precondition (and
+          (closed ?cont)
+          (reachable ?cont)
+          (close ?agent ?cont)
+          (has-free-hand ?agent)
+        )
+        :effect (and (open ?cont) (not (closed ?cont)))
+      )
 
-  ;; --- Appliance interactions ---
+      (:action close
+        :parameters (?agent - agent ?cont - container)
+        :precondition (and
+          (open ?cont)
+          (reachable ?cont)
+          (close ?agent ?cont)
+          (has-free-hand ?agent)
+        )
+        :effect (and (closed ?cont) (not (open ?cont)))
+      )
 
-  (:action switchon
-    :parameters (?agent - agent ?app - appliance)
-    :precondition (and (off ?app) (switchable ?app) (close ?agent ?app))
-    :effect (and (on ?app) (not (off ?app)))
-  )
+      ;; ---------------------------------------------------------------------------
+      ;; APPLIANCE INTERACTIONS
+      ;; ---------------------------------------------------------------------------
 
-  (:action switchoff
-    :parameters (?agent - agent ?app - appliance)
-    :precondition (and (on ?app) (switchable ?app) (close ?agent ?app))
-    :effect (and (off ?app) (not (on ?app)))
-  )
+      (:action switchon
+        :parameters (?agent - agent ?app - appliance)
+        :precondition (and
+          (switchable ?app)
+          (off ?app)
+          (close ?agent ?app)
+        )
+        :effect (and (on ?app) (not (off ?app)))
+      )
 
-  ;; --- Other interactions ---
+      (:action switchoff
+        :parameters (?agent - agent ?app - appliance)
+        :precondition (and
+          (switchable ?app)
+          (on ?app)
+          (close ?agent ?app)
+        )
+        :effect (and (off ?app) (not (on ?app)))
+      )
 
-  (:action drink
-    :parameters (?agent - agent ?obj - object)
-    :precondition (and (drinkable ?obj) (close ?agent ?obj))
-    :effect (and)
-  )
+      ;; ---------------------------------------------------------------------------
+      ;; OTHER INTERACTIONS
+      ;; ---------------------------------------------------------------------------
 
-  (:action touch
-    :parameters (?agent - agent ?obj - object)
-    :precondition (and (close ?agent ?obj))
-    :effect (and)
-  )
+      (:action drink
+        :parameters (?agent - agent ?obj - object)
+        :precondition (and (close ?agent ?obj) (drinkable ?obj))
+        :effect (and) ; consume from object
+      )
 
-  (:action lookat
-    :parameters (?agent - agent ?obj - object)
-    :precondition (and (facing ?agent ?obj))
-    :effect (and)
-  )
-)
+      (:action touch
+        :parameters (?agent - agent ?obj - object)
+        :precondition (and (close ?agent ?obj) (reachable ?obj))
+        :effect (and) ; touch interaction
+      )
 
-"""
+      (:action lookat
+        :parameters (?agent - agent ?obj - object)
+        :precondition (and (facing ?agent ?obj) (reachable ?obj))
+        :effect (and) ; agent now focused on object
+      )
+    )
+    """
 
     def __init__(self):
         self.current_scene_objects = {}
