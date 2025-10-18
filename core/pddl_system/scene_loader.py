@@ -8,8 +8,10 @@ import glob
 import socket
 import time
 
+from ENV_VARS import DATASET_BASE_PATH
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../virtualhome/virtualhome/simulation'))
-from unity_simulator import comm_unity
+from virtualhome.virtualhome.simulation.unity_simulator import comm_unity
 
 
 class SceneLoader:
@@ -37,8 +39,7 @@ class SceneLoader:
 
         # Load tasks from dataset
         scene_name = self.scene_name
-        base_path = os.path.join(os.path.dirname(__file__), '../..',
-                                'virtualhome/virtualhome/dataset/programs_processed_precond_nograb_morepreconds')
+        base_path = DATASET_BASE_PATH + r'\programs_processed_precond_nograb_morepreconds'
 
         executable_path = os.path.join(base_path, 'executable_programs', scene_name, 'results_intentions_march-13-18')
         task_files = sorted(glob.glob(os.path.join(executable_path, '*.txt')))
@@ -121,6 +122,7 @@ class SceneLoader:
                     file_name=self.simulator_path,
                     port=self.port
                 )
+                print("Done connecting to simulator")
 
                 # Increase timeout for complex tasks (default is 30s)
                 self.comm.timeout_wait = 240

@@ -4,12 +4,14 @@ import sys
 import os
 import json
 
+from ENV_VARS import SIMULATOR_PATH, DATASET_BASE_PATH
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '../virtualhome/virtualhome/simulation'))
-from unity_simulator import comm_unity
+from virtualhome.virtualhome.simulation.unity_simulator import comm_unity
 
 # Simple test with PROPER scene setup like our working algorithm
 comm = comm_unity.UnityCommunication(
-    file_name=os.path.join(os.path.dirname(__file__), '..', 'macos_exec.2.2.4.app'),
+    file_name=SIMULATOR_PATH,
     port="8080"
 )
 
@@ -17,7 +19,9 @@ print("Setting up scene with task-specific graph...")
 comm.reset(0)
 
 # Load the SAME scene graph as our working algorithm
-task_file = os.path.join(os.path.dirname(__file__), "..", "virtualhome/virtualhome/dataset/programs_processed_precond_nograb_morepreconds/init_and_final_graphs/TrimmedTestScene1_graph/results_intentions_march-13-18/file1003_2.json")
+# TODO - change the url
+task_file = DATASET_BASE_PATH + r"\init_and_final_graphs\TrimmedTestScene1_graph\results_intentions_march-13-18\file1003_2.json"
+# task_file = os.path.join(os.path.dirname(__file__), "..", "virtualhome/virtualhome/dataset/programs_processed_precond_nograb_morepreconds/init_and_final_graphs/TrimmedTestScene1_graph/results_intentions_march-13-18/file1003_2.json")
 
 with open(task_file, 'r') as f:
     graphs = json.load(f)

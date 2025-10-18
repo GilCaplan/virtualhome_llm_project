@@ -8,6 +8,7 @@ import os
 import sys
 import google.generativeai as genai
 
+from ENV_VARS import GEMINI_MODEL_NAME
 # Import all modules from pddl_system package
 from pddl_system import (
     SceneLoader,
@@ -48,25 +49,10 @@ class PDDLVirtualHomeSystem:
         core_output_dir = os.path.join(os.path.dirname(__file__), 'Output')
         os.makedirs(core_output_dir, exist_ok=True)
 
-        # Configure Gemini 1.5 Flash
+        # Configure Gemini model
         genai.configure(api_key=api_key)
-
-        # Find available Flash model
-        models = genai.list_models()
-        available_models = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
-
-        flash_model = None
-        for model_name in available_models:
-            if 'flash' in model_name.lower():
-                flash_model = model_name
-                break
-
-        if flash_model:
-            self.model = genai.GenerativeModel(flash_model)
-            print(f"✅ Using {flash_model}")
-        else:
-            self.model = genai.GenerativeModel(available_models[0])
-            print(f"✅ Using fallback model: {available_models[0]}")
+        self.model = GEMINI_MODEL_NAME
+        print(f"Using Gemini model: {self.model}")
 
         # Initialize all modules
         self.scene_loader = SceneLoader(simulator_path, scene_name)
@@ -88,8 +74,8 @@ class PDDLVirtualHomeSystem:
             task = self.scene_loader.load_scene_and_task(task_id)
 
             # Step 2: Convert to PDDL problem
-            scene_graph = self.scene_loader.initialize_or_reuse_simulator(task)
-            pddl_problem = self.pddl_generator.scene_to_pddl_problem(task, scene_graph)
+            # scene_graph = self.scene_loader.initialize_or_reuse_simulator(task)
+            pddl_problem = self.pddl_generator.scene_graph_to_pddl_problem(task)
 
             # Initialize modules that need comm connection
             if self.script_converter is None:
@@ -104,7 +90,7 @@ class PDDLVirtualHomeSystem:
                 self.llm_planner = LLMPlanner(
                     self.model,
                     self.pddl_generator.current_scene_objects,
-                    PDDLGenerator.VIRTUALHOME_DOMAIN
+                    PDDLGenerator.virtualhome_domain_pddl
                 )
             else:
                 # Update scene objects for current task

@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+from ENV_VARS import SIMULATOR_PATH, GEMINI_API_KEY
 # Import the modular implementation
 from pddl_virtualhome_system_modular import PDDLVirtualHomeSystem
 
@@ -45,10 +46,13 @@ def main():
         pass
 
     # Configuration
-    api_key = os.getenv('GOOGLE_API_KEY')
-    simulator_path = '../macos_exec.2.2.4.app'
+    api_key = GEMINI_API_KEY
+    simulator_path = SIMULATOR_PATH
     scene_name = 'TrimmedTestScene1_graph'
-    default_tasks = [67, 1, 5, 36, 5]  # Wash teeth, Put groceries, Change TV channel, Watch TV
+    # TODO - test on more tasks
+    # default_tasks = [67, 1, 5, 36, 5]  # Wash teeth, Put groceries, Change TV channel, Watch TV
+    default_tasks = [1]  # Wash teeth, Put groceries, Change TV channel, Watch TV
+
 
     print("=" * 80)
     print("PDDL-VIRTUALHOME SYSTEM - DEFAULT RUN")
