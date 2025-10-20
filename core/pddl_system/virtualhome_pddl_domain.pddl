@@ -36,7 +36,6 @@
     ;; --- Reachability types ---
     (always-reachable ?obj - static-objectt)
     (reachable-on-surface ?obj - objectt ?surf - surface-objectt)
-    (reachable-inside-container ?obj - objectt ?cont - container-objectt)
     (reachable-inside-room ?obj - objectt ?loc - room)
 
 
@@ -84,7 +83,6 @@
     :parameters (?agent - agent ?obj - objectt ?cont - container-objectt)
     :precondition (and
         (standing ?agent)
-        (reachable-inside-container ?obj ?cont)
         (is-open ?cont)
         (not-ready-to-move-to-next-obj ?agent)
     )
@@ -169,7 +167,6 @@
   (:action grab-from-container
     :parameters (?agent - agent ?obj - grabbable-objectt ?cont - container-objectt)
     :precondition (and
-        (reachable-inside-container ?obj ?cont)
         (is-open ?cont)
         (close ?agent ?obj)
         (has-free-hand ?agent)
@@ -222,7 +219,6 @@
         (not (holding ?agent ?obj))
         (in-container ?obj ?cont)
         (has-free-hand ?agent)
-        (reachable-inside-container ?obj ?cont)
     )
   )
 

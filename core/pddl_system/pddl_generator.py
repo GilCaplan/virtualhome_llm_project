@@ -22,6 +22,7 @@ class PDDLGenerator:
         Generates PDDL goal conditions from a natural language task description using an LLM.
         This function serves as a placeholder for integrating with an actual LLM service to convert
         task descriptions into formal PDDL goal statements.
+        Make sure the goal does what the task description says.
         """
         import google.generativeai as genai
         print("Generating PDDL goal using LLM...")
@@ -50,7 +51,45 @@ Goal PDDL:
         print(f"Generated Goal PDDL: {goal_pddl}")
         return goal_pddl
 
+    # Use LLM to decide which objects in the environment are related to the task and which can be removed
+    def condense_scene_graph(self, task_description: str, objects_in_scene: set) -> dict:
+        """
+        Condenses the scene graph by identifying relevant objects for the given task using an LLM.
+        :param task_description: Natural language description of the task.
+        :param objects_in_scene: List of object names present in the scene.
+        :return: A dictionary containing for each object whether it is relevant or not.
+        """
+        from google import genai
+        from pydantic import BaseModel
+        print("Condensing scene graph using LLM...")
 
+        # use the "Structured output" API
+
+        class ObjectRelevance(BaseModel):
+            object_name: str
+            relevant: bool
+
+        prompt = f"""
+            Given the following task description: "{task_description}" and the following list of objects in the scene: {objects_in_scene}
+            Determine which objects are relevant to completing the task.
+            An object is relevant also if it is only slightly related to the task or may be needed indirectly.
+            For all the objects listed provide a decision whether they are relevant or not to the task.
+            """
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": list[ObjectRelevance],
+            },
+        )
+        relevant_objects_list: list[ObjectRelevance] = response.parsed
+
+        relevant_objects_dict = {obj.object_name: obj.relevant for obj in relevant_objects_list}
+        print(f"Relevant objects: {relevant_objects_dict}")
+        return relevant_objects_dict
 
 
     def scene_graph_to_pddl_problem(self, task: str):
@@ -77,6 +116,11 @@ Goal PDDL:
         edges = scene_graph['edges']
         objects = []  # object declarations
         character_objects = []  # all the objects that are of type character
+        objects_relevant_map = self.condense_scene_graph(task['title'],
+                                                         set([node.get("class_name", f"obj_{node['id']}") for node in nodes]))
+        objects_to_always_keep = ['character', 'floor']
+        for obj_to_keep in objects_to_always_keep:
+            objects_relevant_map[obj_to_keep] = True
         objects_to_ignore = set()
         init = []  # initial state predicates
         used_names = set()
@@ -84,10 +128,10 @@ Goal PDDL:
         open_containers = set()
         rooms = set()
         def make_safe_name(name, id_):
-            safe_name = f"obj_{name.lower()}_{id_}"
-            while safe_name in used_names:
-                safe_name += "_x"
-            used_names.add(safe_name)
+            safe_name = f"{name.lower()}_{id_}"
+            # while safe_name in used_names:
+            #     safe_name += "_x"
+            # used_names.add(safe_name)
             return safe_name
         def infer_type(node):
             """
@@ -123,12 +167,68 @@ Goal PDDL:
 
         obj_types = {}  # map object name to type
 
+        # is object needed for the pddl
+        needed_objects = set()
         for node in nodes:
             obj_type = infer_type(node)
             obj_name = make_safe_name(node.get("class_name", "obj"), node["id"])
             if obj_type == "other":
-                objects_to_ignore.add(obj_name)
                 continue
+
+            if obj_type == "room":
+                needed_objects.add(obj_name)
+                continue
+
+            # ✅ PDDL Problem created with 54 objects, 333 init conditions
+            # ✅ PDDL Problem created with 168 objects, 1900 init conditions
+            if objects_relevant_map.get(node.get("class_name", f"obj_{node['id']}"), False):
+                needed_objects.add(obj_name)
+                continue
+
+        # for all the nodes that were not added, if they have an edge to a needed object, add them as well
+        additional_needed_objects = set()
+        for node in nodes:
+            obj_type = infer_type(node)
+            if obj_type == "other":
+                continue
+            obj_name = make_safe_name(node.get("class_name", "obj"), node["id"])
+            if obj_name in needed_objects:
+                continue
+            for edge in edges:
+                relation_type = edge["relation_type"].upper()
+                if relation_type in ["CLOSE", "FACING", "BETWEEN"]:
+                    continue
+
+                if edge["from_id"] == node["id"]:
+                    to_node = next(n for n in nodes if n["id"] == edge["to_id"])
+                    to_obj_name = make_safe_name(to_node.get("class_name", "obj"), to_node["id"])
+                    to_obj_type = infer_type(to_node)
+                    # if the relation is object INSIDE room skip it
+                    if relation_type == "INSIDE" and to_obj_type == "room":
+                        continue
+                    # if the relation type is ON and the object ON floor skip it
+                    if relation_type == "ON" and "floor" in to_obj_name:
+                        continue
+                    if to_obj_name in needed_objects:
+                        additional_needed_objects.add(obj_name)
+                        print(f"Also adding {obj_name} because it connects to needed object {to_obj_name} ({edge})")
+                        break
+                elif edge["to_id"] == node["id"]:
+                    from_node = next(n for n in nodes if n["id"] == edge["from_id"])
+                    from_obj_name = make_safe_name(from_node.get("class_name", "obj"), from_node["id"])
+                    if from_obj_name in needed_objects:
+                        additional_needed_objects.add(obj_name)
+                        print(f"Also adding {obj_name} because it connects to needed object {from_obj_name} ({edge})")
+                        break
+
+        needed_objects.update(additional_needed_objects)
+
+        for node in nodes:
+            obj_type = infer_type(node)
+            obj_name = make_safe_name(node.get("class_name", "obj"), node["id"])
+            if obj_name not in needed_objects:
+                continue
+
             objects.append(f"{obj_name} - {obj_type}")
             node_name_map[node["id"]] = obj_name
             if obj_type == "character":
@@ -208,7 +308,8 @@ Goal PDDL:
                     init.append(f"(in-container {from_name} {to_name})")
                     # if the container is open the item inside is reachable
                     if to_name in open_containers:
-                        init.append(f"(reachable-inside-container {from_name} {to_name})")
+                        # init.append(f"(reachable-inside-container {from_name} {to_name})")
+                        pass
             elif rel_type == "ON":
                 if obj_types.get(from_name) == "grabbable-objectt" and obj_types.get(to_name) == "surface-objectt":
                     init.append(f"(on-surface {from_name} {to_name})")
@@ -216,7 +317,8 @@ Goal PDDL:
                     init.append(f"(reachable-on-surface {from_name} {to_name})")
             elif rel_type == "BETWEEN":
                 pass  # ignore for now
-            # if the object is not on any surface or inside any container, and is in a room, we will say it is on the floor
+
+        # if the object is not on any surface or inside any container, and is in a room, we will say it is on the floor
         for node in nodes:
             from_name = node_name_map.get(node["id"])
             if from_name is None:
@@ -272,7 +374,7 @@ Goal PDDL:
         self.pddl_problem = pddl_problem
 
         # Generate goal using LLM
-        goal_pddl = self.generate_goal_pddl_using_llm(task['description'])
+        goal_pddl = self.generate_goal_pddl_using_llm(task['title'])
         pddl_problem = pddl_problem.replace(
             ";; To be filled in using LLM based on task description",
             goal_pddl
