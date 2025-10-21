@@ -20,36 +20,66 @@ class PDDLGenerator:
     def generate_goal_pddl_using_llm(self, task_description: str) -> str:
         """
         Generates PDDL goal conditions from a natural language task description using an LLM.
-        This function serves as a placeholder for integrating with an actual LLM service to convert
-        task descriptions into formal PDDL goal statements.
-        Make sure the goal does what the task description says.
-        """
-        import google.generativeai as genai
-        print("Generating PDDL goal using LLM...")
-
-        # the prompt will give the description and ask for PDDL goal while giving as context the domain file and the problem file
-        prompt = f"""
-Given the following PDDL domain definition:
-{self.virtualhome_domain_pddl}
-and the following task problem file with objects and initial conditions:
-{self.pddl_problem}
-Generate PDDL goal conditions for the following task description:
-Task Description: {task_description}
-Please provide only the PDDL goal conditions without any additional text.
-and only the content that goes inside the (:goal ...) section, instead of the ;; To be filled in using LLM based on task description.
-Goal PDDL:
-        Make sure you use object names that exist in the problem definition.
+        Additionally, determines object-specific goal states using the LLM.
         """
         from google import genai
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("Generating PDDL goal using LLM...")
 
+        # Generate the main goal using the task description
+        prompt = f"""
+    Given the following PDDL domain definition:
+    {self.virtualhome_domain_pddl}
+    and the following task problem file with objects and initial conditions:
+    {self.pddl_problem}
+    Generate PDDL goal conditions for the following task description:
+    Task Description: {task_description}
+    Please provide only the PDDL goal conditions without any additional text.
+    and only the content that goes inside the (:goal ...) section.
+    Goal PDDL:
+        """
+        client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
             model=GEMINI_MODEL_NAME,
             contents=prompt,
         )
-        goal_pddl = response.text.strip()
-        print(f"Generated Goal PDDL: {goal_pddl}")
-        return goal_pddl
+        main_goal_pddl = response.text.strip()
+
+        # Extract objects from the PDDL problem
+        objects_section = self.pddl_problem.split("(:objects")[1].split(")")[0]
+        objects = [line.split("-")[0].strip() for line in objects_section.split("\n") if line.strip()]
+
+        # Generate object-specific goals
+        object_goals = []
+        for obj in objects:
+            obj_prompt = f"""
+    Given the following PDDL domain definition:
+    {self.virtualhome_domain_pddl}
+    Determine if the object '{obj}' has a specific goal state it needs to be in by the end of the task.
+    If it does, provide the goal condition in PDDL format. If not, write false in the response.
+    Goal condition for '{obj}':
+            """
+            #     and the following task problem file with objects and initial conditions:
+            #     {self.pddl_problem}
+            obj_response = client.models.generate_content(
+                model=GEMINI_MODEL_NAME,
+                contents=obj_prompt,
+            )
+            obj_goal = obj_response.text.strip()
+            if "false" not in obj_goal.lower():
+                object_goals.append(obj_goal)
+                print("obj_goal", obj, obj_goal)
+            else:
+                print("obj_goal", obj, "false")
+
+        # Combine the main goal with object-specific goals
+        combined_goal_pddl = f"""
+    (and
+    {main_goal_pddl}
+    {'\n'.join(object_goals)}
+    )
+        """
+        print(f"Generated Combined Goal PDDL: {combined_goal_pddl}")
+        return combined_goal_pddl
 
     # Use LLM to decide which objects in the environment are related to the task and which can be removed
     def condense_scene_graph(self, task_description: str, objects_in_scene: set) -> dict:
