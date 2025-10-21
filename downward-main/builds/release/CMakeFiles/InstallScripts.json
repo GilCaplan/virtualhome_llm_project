@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/cmake_install.cmake",
+		"C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/search/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -1,0 +1,6 @@
+C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/CMakeFiles/translate.dir
+C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/CMakeFiles/edit_cache.dir
+C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/CMakeFiles/rebuild_cache.dir
+C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/search/CMakeFiles/downward.dir
+C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/search/CMakeFiles/edit_cache.dir
+C:/Users/talsc/PycharmProjects/virtualhome/downward/downward-main/builds/release/search/CMakeFiles/rebuild_cache.dir

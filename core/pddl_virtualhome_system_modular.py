@@ -75,6 +75,7 @@ class PDDLVirtualHomeSystem:
 
             # Step 2: Convert to PDDL problem
             # scene_graph = self.scene_loader.initialize_or_reuse_simulator(task)
+            pddl_domain = self.pddl_generator.enrich_domain(task)
             pddl_problem = self.pddl_generator.scene_graph_to_pddl_problem(task)
 
             # Initialize modules that need comm connection

@@ -17,6 +17,43 @@ class PDDLGenerator:
     def __init__(self):
         self.current_scene_objects = {}
 
+    def enrich_domain(self, task) -> str:
+        """
+        give an LLM the default domain, the task title and task description,
+        have the LLM improve the domain by adding any missing predicates, actions, etc.
+        so it will have everything it needs to perform the task
+        """
+        task_title = task["title"]
+        task_description = task["description"]
+
+        from google import genai
+        print("enriching PDDL domain using LLM...")
+        prompt = f"""
+Given the following PDDL domain definition: 
+{self.virtualhome_domain_pddl}
+and the following task title: {task_title}
+and the following task description: {task_description}
+Improve the PDDL domain by adding any missing predicates, actions, etc.
+so it will have everything it needs to perform the task.
+Please provide only the improved PDDL domain without any additional text.
+Make sure the PDDL is valid.
+Make sure to use all the added predicates correctly in the actions: have them in preconditions and effects as needed and have it make sense (dont forget to remove using not())
+Improved PDDL Domain:
+"""
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=prompt,
+        )
+        improved_domain_pddl = response.text.strip()
+        print(f"Generated Improved Domain PDDL:")
+        print(improved_domain_pddl)
+
+        self.virtualhome_domain_pddl = improved_domain_pddl
+        return improved_domain_pddl
+
+
+
     def generate_goal_pddl_using_llm(self, task_description: str) -> str:
         """
         Generates PDDL goal conditions from a natural language task description using an LLM.
