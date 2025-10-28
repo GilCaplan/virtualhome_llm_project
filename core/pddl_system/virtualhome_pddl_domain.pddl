@@ -6,13 +6,13 @@
     agent - object
     room - object
 
-    sittable-objectt - objectt
-    switchable-objectt - objectt
-    grabbable-objectt - objectt
+    sittable-objectt - objectt  ;; an object the agent can sit on
+    switchable-objectt - objectt  ;; an object the agent can switch on/off
+    grabbable-objectt - objectt  ;; an object the agent can grab (hold)
 
-    static-objectt - objectt
-    surface-objectt - static-objectt
-    container-objectt - static-objectt
+    static-objectt - objectt  ;; an object that does not move (e.g., furniture, appliances, containers)
+    surface-objectt - static-objectt  ;; a static object that has a surface the agent can put things on
+    container-objectt - static-objectt  ;; a static object that can contain other objects (e.g., fridge, drawer)
 
   )
 
@@ -35,9 +35,9 @@
 
     ;; --- Reachability types ---
     (always-reachable ?obj - static-objectt)
-    (reachable-on-surface ?obj - objectt ?surf - surface-objectt)
-    (reachable-inside-room ?obj - objectt ?loc - room)
-
+    (reachable-on-surface ?obj - objectt ?surf - surface-objectt)  ;; obj is reachable when placed on surface surf
+    (reachable-inside-room ?obj - objectt ?loc - room)  ;; obj is reachable when placed inside room loc
+    ;; there is no need for reachable-inside-container since it is being handled by is-open predicate
 
     ;; --- Spatial relations ---
     (in-room ?obj - objectt ?room - room)

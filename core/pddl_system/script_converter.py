@@ -42,6 +42,10 @@ class ScriptConverter:
             list: VirtualHome script commands
         """
         print("Step 4: Converting PDDL to VirtualHome script")
+        print("*" * 60)
+        print(pddl_solution)
+        print("*" * 60)
+
 
         # Extract actions from PDDL solution
         actions = []
@@ -49,15 +53,11 @@ class ScriptConverter:
 
         for line in lines:
             line = line.strip()
-            if line.startswith('(') and not line.startswith('(:plan'):
-                # Parse PDDL action: (action-name param1 param2 ...)
-                if line.endswith(')'):
-                    line = line[1:-1]  # Remove outer parentheses
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        action_name = parts[0]
-                        params = parts[1:]
-                        actions.append((action_name, params))
+            if line:
+                parts = re.split(r'\(|\)|, ', line)
+                action_name = parts[0]
+                params = parts[1:]
+                actions.append((action_name, params))
 
         # Convert to VirtualHome script with proper sequencing
         vh_script = []
@@ -80,9 +80,10 @@ class ScriptConverter:
 
         # Save VirtualHome script to task-specific directory
         task_id = self.current_task_id if self.current_task_id is not None else 'unknown'
-        task_dir = f"Output/task_{task_id}"
+        task_dir = f"Output/vh_scripts/task_{task_id}"
         os.makedirs(task_dir, exist_ok=True)
         script_filename = os.path.join(task_dir, "virtualhome_script.txt")
+        print(f"Saving VirtualHome script to: {script_filename}")
         try:
             with open(script_filename, 'w') as f:
                 f.write(f"VIRTUALHOME SCRIPT:\n")
@@ -326,101 +327,93 @@ class ScriptConverter:
 
     def _convert_pddl_action_to_vh(self, action_name, params, object_map):
         """
-        Convert single PDDL action to VirtualHome action.
-
-        Args:
-            action_name: PDDL action name
-            params: List of parameters
-            object_map: Object ID mapping
-
-        Returns:
-            str: VirtualHome action string or None if conversion fails
+        Converts a PDDL action to a VirtualHome (VH) script action.
         """
-        if action_name == "walk":
-            # (walk agent from to) -> [WALK] <to> (id)
-            if len(params) >= 3:
-                destination = params[2]
+        if action_name == "walk-to-static-object":
+            # (walk-to-static-object agent object) -> [WALK] <object> (id)
+            if len(params) >= 2:
+                destination = params[1]
                 obj_id = object_map.get(destination, 1)
                 original_name = object_map.get(f"{destination}_original", destination)
                 return f"[WALK] <{original_name}> ({obj_id})"
 
-        elif action_name == "find-object":
-            # (find-object agent object room) -> [FIND] <object> (id)
-            if len(params) >= 2:
-                obj_name = params[1]
-                obj_id, original_name = self._fuzzy_object_match(obj_name, object_map)
+        elif action_name == "walk-to-surface-object":
+            # (walk-to-surface-object agent object surface) -> [WALK] <surface> (id)
+            if len(params) >= 3:
+                surface = params[2]
+                obj_id = object_map.get(surface, 1)
+                original_name = object_map.get(f"{surface}_original", surface)
+                return f"[WALK] <{original_name}> ({obj_id})"
 
-                if obj_id is None:
-                    print(f"  Cannot find object '{obj_name}' - using fallback")
-                    obj_id = 1
-                    original_name = obj_name
+        elif action_name == "walk-to-inside-container-object":
+            # (walk-to-inside-container-object agent object container) -> [WALK] <container> (id)
+            if len(params) >= 3:
+                container = params[2]
+                obj_id = object_map.get(container, 1)
+                original_name = object_map.get(f"{container}_original", container)
+                return f"[WALK] <{original_name}> ({obj_id})"
 
-                return f"[FIND] <{original_name}> ({obj_id})"
+        elif action_name == "walk-to-inside-room-object":
+            # (walk-to-inside-room-object agent object room) -> [WALK] <room> (id)
+            if len(params) >= 3:
+                room = params[2]
+                obj_id = object_map.get(room, 1)
+                original_name = object_map.get(f"{room}_original", room)
+                return f"[WALK] <{original_name}> ({obj_id})"
 
-        elif action_name == "sit-down":
-            # (sit-down agent furniture) -> [SIT] <furniture> (id)
+        elif action_name == "sit":
+            # (sit agent furniture) -> [SIT] <furniture> (id)
             if len(params) >= 2:
                 furniture_name = params[1]
                 furniture_id = object_map.get(furniture_name, 1)
-                # Get original name for VH script
                 original_name = object_map.get(f"{furniture_name}_original", furniture_name)
                 return f"[SIT] <{original_name}> ({furniture_id})"
 
-        elif action_name == "switch-on":
-            # (switch-on agent appliance) -> [SWITCHON] <appliance> (id)
-            if len(params) >= 2:
-                obj_name = params[1]
-                obj_id = object_map.get(obj_name, 1)
-                original_name = object_map.get(f"{obj_name}_original", obj_name)
-                return f"[SWITCHON] <{original_name}> ({obj_id})"
+        elif action_name == "standup":
+            # (standup agent) -> [STANDUP]
+            return "[STANDUP]"
 
-        elif action_name == "switch-off":
-            # (switch-off agent appliance) -> [SWITCHOFF] <appliance> (id)
-            if len(params) >= 2:
-                obj_name = params[1]
-                obj_id = object_map.get(obj_name, 1)
-                original_name = object_map.get(f"{obj_name}_original", obj_name)
-                return f"[SWITCHOFF] <{original_name}> ({obj_id})"
-
-        elif action_name == "touch-object":
-            # (touch-object agent object) -> [TOUCH] <object> (id)
-            if len(params) >= 2:
-                obj_name = params[1]
-                obj_id = object_map.get(obj_name, 1)
-                original_name = object_map.get(f"{obj_name}_original", obj_name)
-                return f"[TOUCH] <{original_name}> ({obj_id})"
-
-        elif action_name == "open-container":
-            # (open-container agent container) -> [OPEN] <container> (id)
-            if len(params) >= 2:
-                obj_name = params[1]
-                obj_id = object_map.get(obj_name, 1)
-                original_name = object_map.get(f"{obj_name}_original", obj_name)
-                return f"[OPEN] <{original_name}> ({obj_id})"
-
-        elif action_name == "close-container":
-            # (close-container agent container) -> [CLOSE] <container> (id)
-            if len(params) >= 2:
-                obj_name = params[1]
-                obj_id = object_map.get(obj_name, 1)
-                original_name = object_map.get(f"{obj_name}_original", obj_name)
-                return f"[CLOSE] <{original_name}> ({obj_id})"
-
-        elif action_name == "grab-object":
-            # (grab-object agent object) -> [GRAB] <object> (id)
-            if len(params) >= 2:
+        elif action_name == "grab-from-surface":
+            # (grab-from-surface agent object surface) -> [GRAB] <object> (id)
+            if len(params) >= 3:
                 obj_name = params[1]
                 obj_id, original_name = self._fuzzy_object_match(obj_name, object_map)
-
                 if obj_id is None:
-                    print(f"  Cannot find object '{obj_name}' - using fallback")
                     obj_id = 1
                     original_name = obj_name
-
                 return f"[GRAB] <{original_name}> ({obj_id})"
 
-        elif action_name == "put-object-in":
-            # (put-object-in agent object container) -> [PUTIN] <object> (obj_id) <container> (container_id)
+        elif action_name == "grab-from-container":
+            # (grab-from-container agent object container) -> [GRAB] <object> (id)
+            if len(params) >= 3:
+                obj_name = params[1]
+                obj_id, original_name = self._fuzzy_object_match(obj_name, object_map)
+                if obj_id is None:
+                    obj_id = 1
+                    original_name = obj_name
+                return f"[GRAB] <{original_name}> ({obj_id})"
+
+        elif action_name == "grab-from-room":
+            # (grab-from-room agent object room) -> [GRAB] <object> (id)
+            if len(params) >= 3:
+                obj_name = params[1]
+                obj_id, original_name = self._fuzzy_object_match(obj_name, object_map)
+                if obj_id is None:
+                    obj_id = 1
+                    original_name = obj_name
+                return f"[GRAB] <{original_name}> ({obj_id})"
+
+        elif action_name == "put-on-surface":
+            # (put-on-surface agent object surface) -> [PUTON] <object> (obj_id) <surface> (surface_id)
+            if len(params) >= 3:
+                obj_name = params[1]
+                surface_name = params[2]
+                obj_id = object_map.get(obj_name, 1)
+                surface_id = object_map.get(surface_name, 1)
+                return f"[PUT] <{obj_name}> ({obj_id}) <{surface_name}> ({surface_id})"
+
+        elif action_name == "put-in-container":
+            # (put-in-container agent object container) -> [PUTIN] <object> (obj_id) <container> (container_id)
             if len(params) >= 3:
                 obj_name = params[1]
                 container_name = params[2]
@@ -428,4 +421,122 @@ class ScriptConverter:
                 container_id = object_map.get(container_name, 1)
                 return f"[PUTIN] <{obj_name}> ({obj_id}) <{container_name}> ({container_id})"
 
+        elif action_name == "open-container":
+            # (open-container agent container) -> [OPEN] <container> (id)
+            if len(params) >= 2:
+                container_name = params[1]
+                container_id = object_map.get(container_name, 1)
+                original_name = object_map.get(f"{container_name}_original", container_name)
+                return f"[OPEN] <{original_name}> ({container_id})"
+
+        elif action_name == "close-container":
+            # (close-container agent container) -> [CLOSE] <container> (id)
+            if len(params) >= 2:
+                container_name = params[1]
+                container_id = object_map.get(container_name, 1)
+                original_name = object_map.get(f"{container_name}_original", container_name)
+                return f"[CLOSE] <{original_name}> ({container_id})"
+
+        elif action_name == "switchon":
+            # (switchon agent appliance) -> [SWITCHON] <appliance> (id)
+            if len(params) >= 2:
+                appliance_name = params[1]
+                appliance_id = object_map.get(appliance_name, 1)
+                original_name = object_map.get(f"{appliance_name}_original", appliance_name)
+                return f"[SWITCHON] <{original_name}> ({appliance_id})"
+
+        elif action_name == "switchoff":
+            # (switchoff agent appliance) -> [SWITCHOFF] <appliance> (id)
+            if len(params) >= 2:
+                appliance_name = params[1]
+                appliance_id = object_map.get(appliance_name, 1)
+                original_name = object_map.get(f"{appliance_name}_original", appliance_name)
+                return f"[SWITCHOFF] <{original_name}> ({appliance_id})"
+
         return None
+
+
+def test_convert_pddl_action_to_vh():
+    example_pddl_plan = """
+walk-to-static-object(obj_agent_0, freezer_289)
+open-container(obj_agent_0, freezer_289)
+reset-move(obj_agent_0, freezer_289)
+walk-to-static-object(obj_agent_0, trashcan_99)
+open-container(obj_agent_0, trashcan_99)
+reset-move(obj_agent_0, trashcan_99)
+walk-to-surface-object(obj_agent_0, food_food_2016, kitchen_counter_230)
+grab-from-surface(obj_agent_0, food_food_2016, kitchen_counter_230)
+reset-move(obj_agent_0, food_food_2016)
+walk-to-static-object(obj_agent_0, freezer_289)
+put-in-container(obj_agent_0, food_food_2016, freezer_289)
+reset-move(obj_agent_0, freezer_289)
+walk-to-inside-container-object(obj_agent_0, food_onion_2012, trashcan_99)
+grab-from-container(obj_agent_0, food_onion_2012, trashcan_99)
+reset-move(obj_agent_0, food_onion_2012)
+walk-to-static-object(obj_agent_0, freezer_289)
+put-in-container(obj_agent_0, food_onion_2012, freezer_289)
+reset-move(obj_agent_0, freezer_289)
+walk-to-inside-container-object(obj_agent_0, food_food_1000, trashcan_99)
+grab-from-room(obj_agent_0, food_food_1000, dining_room_201)
+reset-move(obj_agent_0, food_food_1000)
+walk-to-static-object(obj_agent_0, freezer_289)
+put-in-container(obj_agent_0, food_food_1000, freezer_289)"""
+    converter = ScriptConverter(comm=None)  # comm not needed for this test
+    object_map = {
+        'freezer_289': 289,
+        'trashcan_99': 99,
+        'food_food_2016': 2016,
+        'kitchen_counter_230': 230,
+        'food_onion_2012': 2012,
+        'food_food_1000': 1000,
+        'dining_room_201': 201
+    }
+    lines = example_pddl_plan.strip().split('\n')
+    for line in lines:
+        line = line.strip()
+        if line:
+            parts = re.split(r'\(|\)|, ', line)
+            action_name = parts[0]
+            params = parts[1:]
+            vh_action = converter._convert_pddl_action_to_vh(action_name, params, object_map)
+            print(f"PDDL: {line} -> VH: {vh_action}")
+
+
+def test_pddl_to_virtualhome_script():
+    example_pddl_solution = """
+walk-to-static-object(obj_agent_0, freezer_289)
+open-container(obj_agent_0, freezer_289)
+reset-move(obj_agent_0, freezer_289)
+walk-to-static-object(obj_agent_0, trashcan_99)
+open-container(obj_agent_0, trashcan_99)
+reset-move(obj_agent_0, trashcan_99)
+walk-to-surface-object(obj_agent_0, food_food_2016, kitchen_counter_230)
+grab-from-surface(obj_agent_0, food_food_2016, kitchen_counter_230)
+reset-move(obj_agent_0, food_food_2016)
+walk-to-static-object(obj_agent_0, freezer_289)
+put-in-container(obj_agent_0, food_food_2016, freezer_289)
+reset-move(obj_agent_0, freezer_289)
+walk-to-inside-container-object(obj_agent_0, food_onion_2012, trashcan_99)
+grab-from-container(obj_agent_0, food_onion_2012, trashcan_99)
+reset-move(obj_agent_0, food_onion_2012)
+walk-to-static-object(obj_agent_0, freezer_289)
+put-in-container(obj_agent_0, food_onion_2012, freezer_289)
+reset-move(obj_agent_0, freezer_289)
+walk-to-inside-container-object(obj_agent_0, food_food_1000, trashcan_99)
+grab-from-room(obj_agent_0, food_food_1000, dining_room_201)
+reset-move(obj_agent_0, food_food_1000)
+walk-to-static-object(obj_agent_0, freezer_289)
+put-in-container(obj_agent_0, food_food_1000, freezer_289)"""
+    converter = ScriptConverter(comm=None)  # comm not needed for this test
+    vh_script = converter.pddl_to_virtualhome_script(example_pddl_solution)
+    print("Generated VirtualHome Script:")
+    for line in vh_script:
+        print(line)
+
+
+
+
+# Run test if executed directly
+if __name__ == '__main__':
+    # test_convert_pddl_action_to_vh()
+    test_pddl_to_virtualhome_script()

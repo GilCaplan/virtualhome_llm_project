@@ -3,6 +3,8 @@
 
 import os
 
+from tqdm import tqdm
+
 from ENV_VARS import PROJECT_PATH, GEMINI_MODEL_NAME, GEMINI_API_KEY
 
 
@@ -33,11 +35,30 @@ Given the following PDDL domain definition:
 {self.virtualhome_domain_pddl}
 and the following task title: {task_title}
 and the following task description: {task_description}
-Improve the PDDL domain by adding any missing predicates, actions, etc.
-so it will have everything it needs to perform the task.
-Please provide only the improved PDDL domain without any additional text.
-Make sure the PDDL is valid.
-Make sure to use all the added predicates correctly in the actions: have them in preconditions and effects as needed and have it make sense (dont forget to remove using not())
+
+Improve the PDDL domain by adding any missing predicates, actions, or other elements necessary to ensure the domain can fully support the task described. Follow these guidelines:
+
+1. **Predicates**:
+   - Add any missing predicates required to represent the task's conditions.
+   - Ensure all added predicates are used consistently in the preconditions and effects of relevant actions.
+
+2. **Actions**:
+   - Add or modify actions to include the new predicates in their preconditions and effects.
+   - Ensure that all predicates are updated correctly in the effects of actions where applicable.
+
+3. **Validation**:
+   - Ensure the resulting PDDL domain is syntactically and semantically valid.
+   - Check that all predicates and actions are logically consistent and relevant to the task.
+
+4. **Output Format**:
+   - Provide only the improved PDDL domain as the output, without any additional text, explanations, or comments.
+   - Start with (define (domain virtualhome) (:requirements :strips :typing)
+   - Do not include the pddl tag at the beginning, only return the PDDL content.
+
+**Important Notes**:
+- Ensure that all added predicates and actions are logically sound and necessary for the task.
+- Do not add predicates or actions that are unused or irrelevant.
+
 Improved PDDL Domain:
 """
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -64,15 +85,38 @@ Improved PDDL Domain:
 
         # Generate the main goal using the task description
         prompt = f"""
-    Given the following PDDL domain definition:
-    {self.virtualhome_domain_pddl}
-    and the following task problem file with objects and initial conditions:
-    {self.pddl_problem}
-    Generate PDDL goal conditions for the following task description:
-    Task Description: {task_description}
-    Please provide only the PDDL goal conditions without any additional text.
-    and only the content that goes inside the (:goal ...) section.
-    Goal PDDL:
+Given the following PDDL domain definition:
+{self.virtualhome_domain_pddl}
+and the following task problem file with objects and initial conditions:
+{self.pddl_problem}
+
+Generate PDDL goal conditions for the following task description:
+Task Description: {task_description}
+
+Your goal is to create a valid and concise `(:goal ...)` section that accurately reflects the intended meaning of the task. Follow these guidelines:
+
+1. **Relevance**:
+   - Include only predicates and objects that are directly relevant to completing the task.
+   - Avoid unnecessary or unrelated conditions.
+
+2. **Clarity**:
+   - Ensure the goal conditions are clear.
+   - Reflect the intended meaning of the task, even if the description is vague or incomplete.
+
+3. **Validation**:
+   - Use only predicates and objects defined in the provided domain and problem files.
+   - Ensure the goal conditions are syntactically and semantically valid.
+
+4. **Output Format**:
+   - Provide only the content that goes inside the `(:goal ...)` section.
+   - Do not include any additional text, explanations, or comments.
+
+**Important Notes**:
+- Ensure the goal is achievable based on the initial conditions and domain actions.
+- Prioritize the user's intent over the literal wording of the task description.
+- Do not include the pddl tag at the beginning, only return the goal content.
+
+Goal PDDL:
         """
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
@@ -87,13 +131,35 @@ Improved PDDL Domain:
 
         # Generate object-specific goals
         object_goals = []
-        for obj in objects:
+        for obj in tqdm(objects, desc="Generating Goal PDDL for Objects"):
             obj_prompt = f"""
-    Given the following PDDL domain definition:
-    {self.virtualhome_domain_pddl}
-    Determine if the object '{obj}' has a specific goal state it needs to be in by the end of the task.
-    If it does, provide the goal condition in PDDL format. If not, write false in the response.
-    Goal condition for '{obj}':
+Given the following PDDL domain definition:
+{self.virtualhome_domain_pddl}
+
+Your task is to determine if the object '{obj}' requires a specific goal state by the end of the task. Follow these guidelines:
+
+1. **Relevance**:
+   - Assess whether the object '{obj}' needs a dedicated goal state to ensure the task is completed correctly and without side effects.
+   - Consider the "do as I mean, not as I say" principle: account for implicit requirements (e.g., closing the fridge after use) even if not explicitly stated.
+
+2. **Logical Consistency**:
+   - Ensure the goal condition is logically consistent with the domain and task requirements.
+   - Avoid unnecessary or redundant goal conditions for objects that do not require them.
+
+3. **Validation**:
+   - Use only predicates and objects defined in the provided PDDL domain.
+   - Ensure the goal condition is syntactically and semantically valid.
+
+4. **Output Format**:
+   - If the object '{obj}' requires a goal state, provide the goal condition in valid PDDL format.
+   - If the object does not require a goal state, respond with `false`.
+   - Do not include any additional text, explanations, or comments.
+
+**Important Notes**:
+- Ensure no side effects (e.g., leaving objects out of place or in an unintended state).
+- Only add a goal condition if it is necessary and makes sense for the task.
+
+Goal condition for '{obj}':
             """
             #     and the following task problem file with objects and initial conditions:
             #     {self.pddl_problem}
@@ -104,9 +170,11 @@ Improved PDDL Domain:
             obj_goal = obj_response.text.strip()
             if "false" not in obj_goal.lower():
                 object_goals.append(obj_goal)
-                print("obj_goal", obj, obj_goal)
+                # print("obj_goal", obj, obj_goal)
+                print(f"Added object-specific goal for '{obj}': {obj_goal}")
             else:
-                print("obj_goal", obj, "false")
+                # print("obj_goal", obj, "false")
+                pass
 
         # Combine the main goal with object-specific goals
         combined_goal_pddl = f"""
@@ -228,7 +296,7 @@ Improved PDDL Domain:
             elif "SITTABLE" in props:
                 return "sittable-objectt"
             else:
-                print(node)
+                # print(node)
                 return "other"
 
 
@@ -347,11 +415,11 @@ Improved PDDL Domain:
             from_node = next(n for n in nodes if n["id"] == edge["from_id"])
             to_node = next(n for n in nodes if n["id"] == edge["to_id"])
             if from_node["id"] not in node_name_map:
-                print(edge)
+                # print(edge)
                 continue
             from_name = node_name_map[from_node["id"]]
             if to_node["id"] not in node_name_map:
-                print(edge)
+                # print(edge)
                 continue
             to_name = node_name_map[to_node["id"]]
             rel_type = edge["relation_type"].upper()

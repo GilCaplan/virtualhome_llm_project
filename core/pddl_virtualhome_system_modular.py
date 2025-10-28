@@ -19,6 +19,7 @@ from pddl_system import (
     ObjectManager,
     VideoGenerator
 )
+from test_planner import run_unified_planner_string
 
 
 class PDDLVirtualHomeSystem:
@@ -74,8 +75,9 @@ class PDDLVirtualHomeSystem:
             task = self.scene_loader.load_scene_and_task(task_id)
 
             # Step 2: Convert to PDDL problem
-            # scene_graph = self.scene_loader.initialize_or_reuse_simulator(task)
-            pddl_domain = self.pddl_generator.enrich_domain(task)
+            scene_graph = self.scene_loader.initialize_or_reuse_simulator(task)
+            # pddl_domain = self.pddl_generator.enrich_domain(task)
+            pddl_domain = self.pddl_generator.virtualhome_domain_pddl
             pddl_problem = self.pddl_generator.scene_graph_to_pddl_problem(task)
 
             # Initialize modules that need comm connection
@@ -97,12 +99,19 @@ class PDDLVirtualHomeSystem:
                 # Update scene objects for current task
                 self.llm_planner.scene_objects = self.pddl_generator.current_scene_objects
 
-            pddl_solution = self.llm_planner.solve_pddl_with_llm(pddl_problem, task)
+            # pddl_solution = self.llm_planner.solve_pddl_with_llm(pddl_problem, task)
+
+            pddl_solution = run_unified_planner_string(pddl_domain, pddl_problem)
+
 
             # Step 4: Convert to VirtualHome script
             # Set current task ID in script converter for file naming
             self.script_converter.current_task_id = self.current_task_id
             vh_script = self.script_converter.pddl_to_virtualhome_script(pddl_solution)
+            print("\nGenerated VirtualHome Script:")
+            for line in vh_script:
+                print(line)
+
 
             # Step 4.5: Detect and spawn missing objects
             missing_objects = self.object_manager._detect_missing_objects(vh_script, task['initial_graph'])
